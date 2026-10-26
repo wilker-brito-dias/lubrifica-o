@@ -65,7 +65,7 @@ async function load(){
     ROWS=qry(d,'SELECT * FROM abastecimentos ORDER BY fim DESC');
     RANK=qry(d,'SELECT maquina,COUNT(*) n,SUM(litros) total,AVG(litros) media FROM abastecimentos GROUP BY maquina ORDER BY total DESC');
     d.close();draw();
-  }catch(e){box('<h1>Histórico</h1><p class="warn">Não foi possível ler o banco: '+esc(e.message)+'</p><button class="b" onclick="load()">Tentar de novo</button>')}
+  }catch(e){box('<h1>Histórico</h1><p class="warn">Não foi possível ler o banco: '+esc((e&&e.message)||e)+'</p><button class="b" onclick="load()">Tentar de novo</button>')}
 }
 function draw(){
   const rows=F?ROWS.filter(r=>r.maquina===F):ROWS;
