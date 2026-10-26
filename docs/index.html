@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0c141d">
+<title>Abastecimento HF28</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<style>
+:root{--bg:#0c141d;--ink:#e8eef5;--mut:#8ea0b3;--acc:#f5a524;--ok:#3ddc97;--bad:#ff6b6b;--line:rgba(255,255,255,.13);color-scheme:dark}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:radial-gradient(900px 520px at 85% -10%,#21405f 0,transparent 62%),radial-gradient(700px 420px at -10% 110%,#3a2a10 0,transparent 60%),var(--bg);background-attachment:fixed;color:var(--ink);font:17px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;min-height:100vh;padding:env(safe-area-inset-top) 16px calc(88px + env(safe-area-inset-bottom))}
+#main{max-width:720px;margin:0 auto;display:grid;gap:16px;padding-top:16px}
+h1{font-size:1.7rem;line-height:1.2;margin:.2em 0 .3em;letter-spacing:-.01em}
+h2{font-size:1.15rem;margin:0 0 .6em}
+p{margin:.3em 0}
+.m{color:var(--mut)}
+.g{background:rgba(255,255,255,.06);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);border:1px solid var(--line);border-radius:20px;padding:22px}
+.c{text-align:center}
+.steps{display:flex;gap:8px}
+.steps span{flex:1;text-align:center;padding:8px 4px;border-radius:12px;font-size:.9rem;color:var(--mut);border:1px solid var(--line);background:rgba(255,255,255,.03)}
+.steps .cur{color:#1b1200;background:var(--acc);border-color:var(--acc);font-weight:700}
+.steps .done{color:var(--ok);border-color:rgba(61,220,151,.45)}
+.ring{width:150px;height:150px;margin:10px auto 18px;border-radius:50%;border:2px solid var(--mut);display:grid;place-items:center;position:relative;font-size:1.6rem;color:var(--mut)}
+.ring.on{border-color:var(--acc);color:var(--acc)}
+.ring.on::after{content:"";position:absolute;inset:-2px;border-radius:50%;border:2px solid var(--acc);animation:p 1.8s ease-out infinite}
+@keyframes p{from{transform:scale(1);opacity:.8}to{transform:scale(1.5);opacity:0}}
+@media (prefers-reduced-motion:reduce){.ring.on::after{animation:none}}
+.who{font-size:1.9rem;font-weight:700;margin:0 0 .5em}
+.tm{font-size:3.4rem;font-weight:700;font-variant-numeric:tabular-nums;color:var(--acc);margin:.2em 0 .5em}
+.b{display:block;width:100%;min-height:58px;margin-top:12px;padding:14px 18px;font:inherit;font-weight:600;color:var(--ink);background:rgba(255,255,255,.08);border:1px solid var(--line);border-radius:16px;cursor:pointer}
+.b.p{background:var(--acc);border-color:var(--acc);color:#1b1200}
+.b:focus-visible,input:focus-visible,#nav button:focus-visible{outline:3px solid #7cc4ff;outline-offset:2px}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+label{display:block;margin-top:16px;color:var(--mut);font-size:.95rem}
+input{display:block;width:100%;margin-top:6px;padding:14px;font:inherit;color:var(--ink);background:rgba(0,0,0,.3);border:1px solid var(--line);border-radius:14px}
+#lt{font-size:2rem;font-weight:700}
+#pv{width:100%;max-height:260px;object-fit:contain;margin-top:10px;border-radius:14px}
+.ls{list-style:none;margin:14px 0 0;padding:0}
+.ls li{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 0;border-top:1px solid var(--line)}
+.ls span,.ls small{display:block}
+.lt{text-align:right;font-weight:700;white-space:nowrap}
+.ok{color:var(--ok)}
+.x{background:none;border:1px solid var(--line);color:var(--bad);border-radius:10px;padding:8px 12px;font:inherit}
+.warn{padding:12px 14px;border-radius:14px;background:rgba(255,107,107,.12);border:1px solid rgba(255,107,107,.4);color:#ffb3b3}
+#nav{position:fixed;left:0;right:0;bottom:0;display:flex;gap:10px;padding:10px 16px calc(10px + env(safe-area-inset-bottom));background:rgba(12,20,29,.85);-webkit-backdrop-filter:blur(16px);backdrop-filter:blur(16px);border-top:1px solid var(--line)}
+#nav button{flex:1;min-height:56px;font:inherit;font-weight:600;color:var(--mut);background:none;border:1px solid transparent;border-radius:16px}
+#nav button.on{color:var(--acc);border-color:var(--acc);background:rgba(245,165,36,.1)}
+#toast{position:fixed;left:16px;right:16px;bottom:calc(92px + env(safe-area-inset-bottom));max-width:560px;margin:0 auto;padding:14px 18px;border-radius:14px;background:#12382b;border:1px solid var(--ok);opacity:0;pointer-events:none;transition:opacity .2s}
+#toast.bad{background:#3a1717;border-color:var(--bad)}
+#toast.show{opacity:1}
+</style>
+</head>
+<body>
+<div id="main"></div>
+<nav id="nav"><button data-t="a" onclick="go('a')">Abastecer</button><button data-t="h" onclick="location.href='historico.html'">Histórico</button><button data-t="c" onclick="go('c')">Ajustes</button></nav>
+<div id="toast" role="status"></div>
+<script src="gh.js"></script>
+<script>
+const $=s=>document.querySelector(s);
+const S={step:0,w:null,m:null,t0:null,photo:null,nfc:false,tab:'a'};
+const reg=JSON.parse(localStorage.getItem('reg')||'{"w":{},"m":{}}');
+const saveReg=()=>localStorage.setItem('reg',JSON.stringify(reg));
+const p2=n=>String(n).padStart(2,'0');
+const hk=d=>d.getFullYear()+'-'+p2(d.getMonth()+1)+'-'+p2(d.getDate())+'_'+p2(d.getHours())+'h';
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmt=n=>String(n).replace('.',',');
+function toast(t,bad){const e=$('#toast');e.textContent=t;e.className='show'+(bad?' bad':'');clearTimeout(toast.k);toast.k=setTimeout(()=>e.className='',4000)}
+
+/* Banco local (IndexedDB) */
+let db;
+const req=r=>new Promise((ok,no)=>{r.onsuccess=()=>ok(r.result);r.onerror=()=>no(r.error)});
+const store=m=>db.transaction('abast',m).objectStore('abast');
+const all=()=>req(store('readonly').getAll());
+const put=r=>req(store('readwrite').put(r));
+const q=indexedDB.open('hf28',1);
+q.onupgradeneeded=()=>q.result.createObjectStore('abast',{keyPath:'id',autoIncrement:true});
+q.onsuccess=()=>{db=q.result;render()};
+q.onerror=()=>toast('Não foi possível abrir o banco do tablet.',1);
+if(navigator.storage&&navigator.storage.persist)navigator.storage.persist();
+
+/* Arquivos */
+const cols=['id','inicio','fim','duracao_s','colaborador','cracha_id','maquina','totem_id','produto','litros','obs','foto_arquivo','sincronizado'];
+const csv=rows=>[cols.join(';')].concat(rows.map(r=>cols.map(c=>{
+  let v=c==='foto_arquivo'?(r.foto?'foto_'+r.id+'.jpg':''):c==='litros'?fmt(r.litros):r[c];
+  v=v==null?'':String(v);return /[;"\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v}).join(';'))).join('\r\n');
+function dl(n,c,t){const b=c instanceof Blob?c:new Blob([c],{type:t});const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=n;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),4000)}
+function dataBlob(u){const bin=atob(u.split(',')[1]),a=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)a[i]=bin.charCodeAt(i);return new Blob([a],{type:'image/jpeg'})}
+async function exportHour(h,novo){
+  const rows=(await all()).filter(r=>r.hora===h).sort((a,b)=>a.id-b.id);
+  if(!rows.length){toast('Nenhum abastecimento nesta hora.',1);return}
+  dl('abastecimentos_'+h+'.csv','\ufeff'+csv(rows),'text/csv;charset=utf-8');
+  if(novo&&novo.foto)setTimeout(()=>dl('foto_'+novo.id+'.jpg',dataBlob(novo.foto)),500);
+}
+async function exportAll(){dl('abastecimentos_todos_'+hk(new Date())+'.csv','\ufeff'+csv((await all()).sort((a,b)=>a.id-b.id)),'text/csv;charset=utf-8')}
+
+/* Envio ao banco SQL no GitHub */
+let syncing=false;
+async function sync(){
+  if(syncing)return;syncing=true;
+  try{const rows=(await all()).filter(r=>!r.sincronizado).sort((a,b)=>a.id-b.id);if(rows.length)await GH.push(rows,put)}
+  finally{syncing=false}
+}
+addEventListener('online',()=>sync().then(()=>toast('Pendentes enviados.')).catch(()=>{}));
+
+/* NFC */
+function tag(id){
+  if(S.step>1||!id)return;
+  const k=S.step===0?'w':'m';
+  let name=reg[k][id];
+  if(!name){
+    name=prompt((k==='w'?'Primeira leitura deste crachá':'Primeira leitura deste totem')+' ('+id+').\n'+(k==='w'?'Nome do colaborador:':'Nome ou número da máquina:'));
+    if(!name||!name.trim())return;
+    name=name.trim();reg[k][id]=name;saveReg();
+  }
+  if(k==='w')S.w={id,name};else{S.m={id,name};S.t0=new Date()}
+  S.step++;render();if(navigator.vibrate)navigator.vibrate(120);
+}
+function manual(){const id=prompt(S.step===0?'Código do crachá:':'Código do totem da máquina:');if(id)tag(id.trim())}
+async function startNFC(){
+  if(!('NDEFReader' in window)){toast('Este navegador não tem NFC web. Use o Chrome no Android com a página em HTTPS, ou digite o código.',1);return}
+  try{
+    const r=new NDEFReader();await r.scan();
+    r.onreading=e=>{let id=e.serialNumber;for(const x of e.message.records)if(x.recordType==='text'){id=new TextDecoder(x.encoding||'utf-8').decode(x.data);break}tag(id)};
+    r.onreadingerror=()=>toast('Não consegui ler a tag. Tente de novo ou digite o código.',1);
+    S.nfc=true;render();
+  }catch(e){toast('NFC bloqueado ('+e.message+'). Ative o NFC do tablet e permita no navegador.',1)}
+}
+
+/* Fluxo */
+function go(t){S.tab=t;render()}
+function reset(){S.step=0;S.w=S.m=S.t0=S.photo=null;render()}
+function photo(i){
+  const f=i.files[0];if(!f)return;const im=new Image();
+  im.onload=()=>{const k=Math.min(1,720/Math.max(im.width,im.height)),c=document.createElement('canvas');c.width=im.width*k;c.height=im.height*k;c.getContext('2d').drawImage(im,0,0,c.width,c.height);S.photo=c.toDataURL('image/jpeg',.6);$('#pv').src=S.photo;$('#pv').hidden=false;URL.revokeObjectURL(im.src)};
+  im.src=URL.createObjectURL(f);
+}
+async function save(){
+  const l=parseFloat(($('#lt').value||'').replace(',','.'));
+  if(!(l>0)){toast('Informe os litros abastecidos.',1);return}
+  const fim=new Date();
+  const r={uid:crypto.randomUUID(),inicio:S.t0.toISOString(),fim:fim.toISOString(),hora:hk(fim),duracao_s:Math.round((fim-S.t0)/1000),colaborador:S.w.name,cracha_id:S.w.id,maquina:S.m.name,totem_id:S.m.id,produto:'HF28',litros:l,obs:$('#ob').value.trim(),foto:S.photo,sincronizado:false};
+  try{r.id=await put(r)}catch(e){toast('Erro ao gravar no banco: '+e.message,1);return}
+  if(localStorage.getItem('csv')!=='0')await exportHour(r.hora,r);
+  reset();toast('Salvando no banco do GitHub...');
+  try{await sync();toast('Salvo no banco do GitHub.')}catch(e){toast('Salvo no tablet. Envio pendente: '+e.message,1)}
+}
+function delReg(k,i){if(confirm('Remover este cadastro?')){delete reg[k][i];saveReg();cfg()}}
+
+/* Telas */
+function render(){
+  document.querySelectorAll('#nav button').forEach(b=>b.classList.toggle('on',b.dataset.t===S.tab));
+  if(S.tab==='c')return cfg();
+  const L=['Crachá','Máquina','Abastecer','Registrar'];
+  let h=window.isSecureContext?'':'<p class="warn">Esta página não está em HTTPS, então o NFC não funciona. Publique no GitHub Pages ou use o código digitado.</p>';
+  h+='<div class="steps">'+L.map((x,i)=>'<span class="'+(i<S.step?'done':i===S.step?'cur':'')+'">'+x+'</span>').join('')+'</div>';
+  if(S.step<2){
+    const w=S.step===0;
+    h+='<section class="g c"><div class="ring '+(S.nfc?'on':'')+'"><b>NFC</b></div><h1>'+(w?'Aproxime o seu crachá':'Aproxime o totem da máquina')+'</h1>'
+      +'<p class="m">'+(S.nfc?'Leitura ativa. Encoste na parte de trás do tablet.':'Toque em ativar para liberar a leitura NFC.')+'</p>'
+      +(S.w&&!w?'<p class="who">'+esc(S.w.name)+'</p>':'')
+      +(S.nfc?'':'<button class="b p" onclick="startNFC()">Ativar leitura NFC</button>')
+      +'<button class="b" onclick="manual()">Digitar código</button></section>';
+  }else if(S.step===2){
+    h+='<section class="g c"><p class="m">Colaborador</p><p class="who">'+esc(S.w.name)+'</p><p class="m">Máquina</p><p class="who">'+esc(S.m.name)+'</p><p class="m">Produto: HF28</p><div class="tm" id="tm">00:00</div>'
+      +'<button class="b p" onclick="S.step=3;render()">Finalizar abastecimento</button><button class="b" onclick="reset()">Cancelar</button></section>';
+  }else{
+    h+='<section class="g"><h1>Registrar abastecimento</h1><p class="m">'+esc(S.w.name)+' na máquina '+esc(S.m.name)+'</p>'
+      +'<label>Litros abastecidos<input id="lt" type="number" inputmode="decimal" step="0.01" min="0" placeholder="0,00"></label>'
+      +'<label>Foto do visor de dosagem<input id="ph" type="file" accept="image/*" capture="environment" onchange="photo(this)"></label>'
+      +'<img id="pv" alt="Foto do visor" '+(S.photo?'src="'+S.photo+'"':'hidden')+'>'
+      +'<label>Observação (opcional)<input id="ob" type="text"></label>'
+      +'<button class="b p" onclick="save()">Salvar</button><button class="b" onclick="S.step=2;render()">Voltar</button></section>';
+  }
+  $('#main').innerHTML=h;
+}
+let dp;
+addEventListener('beforeinstallprompt',e=>{e.preventDefault();dp=e;if(S.tab==='c')cfg()});
+function instalar(){if(dp){dp.prompt();dp=null;cfg()}}
+async function enviar(){toast('Enviando...');try{await sync();toast('Enviado ao banco do GitHub.')}catch(e){toast('Falha no envio: '+e.message,1)}cfg()}
+async function saveGh(){
+  GH.set({repo:$('#gr').value.trim(),branch:$('#gb').value.trim()||'main',token:$('#gt').value.trim()});
+  try{const priv=await GH.test();toast(priv?'Conectado ao repositório privado.':'Conectado, mas o repositório é público: os dados ficam visíveis a todos.',!priv)}
+  catch(e){toast('Falha: '+e.message,1)}
+}
+function togCsv(){localStorage.setItem('csv',localStorage.getItem('csv')==='0'?'1':'0');cfg()}
+async function cfg(){
+  const c=GH.cfg(),n=(await all()).filter(r=>!r.sincronizado).length;
+  let cad='';
+  for(const k of ['w','m'])for(const i in reg[k])cad+='<li><div><b>'+esc(reg[k][i])+'</b><span class="m">'+(k==='w'?'Crachá':'Totem')+' '+esc(i)+'</span></div><button class="x" data-i="'+esc(i)+'" onclick="delReg(\''+k+'\',this.dataset.i)">Remover</button></li>';
+  $('#main').innerHTML='<section class="g"><h1>Ajustes</h1><p class="m">'+(n?n+' abastecimento(s) aguardando envio ao GitHub.':'Tudo enviado ao banco do GitHub.')+'</p>'
+    +(n?'<button class="b p" onclick="enviar()">Enviar pendentes agora</button>':'')
+    +(dp?'<button class="b" onclick="instalar()">Instalar como app</button>':'<p class="m">Para instalar como app: menu do Chrome, Instalar app.</p>')+'</section>'
+    +'<section class="g"><h2>Banco no GitHub</h2><label>Repositório dos dados (usuario/nome)<input id="gr" value="'+esc(c.repo||'')+'" placeholder="usuario/lubrificacao-dados" autocapitalize="off"></label><label>Branch<input id="gb" value="'+esc(c.branch||'main')+'"></label><label>Token de acesso<input id="gt" type="password" value="'+esc(c.token||'')+'" autocomplete="off"></label><button class="b" onclick="saveGh()">Salvar e testar conexão</button></section>'
+    +'<section class="g"><h2>Arquivos na pasta Downloads</h2><button class="b" onclick="togCsv()">CSV da hora ao salvar: '+(localStorage.getItem('csv')==='0'?'desligado':'ligado')+'</button></section>'
+    +'<section class="g"><h2>Crachás e totens cadastrados</h2><ul class="ls">'+(cad||'<li class="m">Os cadastros aparecem aqui na primeira leitura de cada tag.</li>')+'</ul></section>';
+}
+if(location.hash==='#ajustes')S.tab='c';
+if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js');
+setInterval(()=>{const e=$('#tm');if(e&&S.t0){const s=Math.floor((Date.now()-S.t0)/1000);e.textContent=p2(Math.floor(s/60))+':'+p2(s%60)}},1000);
+</script>
+</body>
+</html>
