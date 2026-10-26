@@ -33,7 +33,11 @@ const GH={
     return fetch(this.u(path),{method:'PUT',headers:this.h(),body:JSON.stringify({message:msg,content:b64s,sha:sha||undefined,branch:this.cfg().branch||undefined})});
   },
   async push(rows,save){
+    try{await this._push(rows,save)}catch(e){throw new Error((e&&e.message)||String(e))}
+  },
+  async _push(rows,save){
     if(!this.ok())throw new Error('configure o GitHub em Ajustes');
+    for(const r of rows)if(!r.uid){r.uid=crypto.randomUUID();await save(r)}
     for(const r of rows){
       if(r.foto&&!r.fotoUp){
         const x=await this.put('fotos/'+r.uid+'.jpg',r.foto.split(',')[1],'foto '+r.uid);
@@ -46,7 +50,7 @@ const GH={
       const cur=await this.read();
       const d=cur&&cur.bytes.length?new S.Database(cur.bytes):new S.Database();
       d.run(this.SCHEMA);
-      for(const r of rows)d.run('INSERT OR IGNORE INTO abastecimentos VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',[r.uid,r.inicio,r.fim,r.duracao_s,r.colaborador,r.cracha_id,r.maquina,r.totem_id,r.produto,r.litros,r.obs,r.foto?'fotos/'+r.uid+'.jpg':'']);
+      for(const r of rows)d.run('INSERT OR IGNORE INTO abastecimentos VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',[r.uid,r.inicio,r.fim,r.duracao_s,r.colaborador,r.cracha_id,r.maquina,r.totem_id,r.produto,r.litros,r.obs,r.foto?'fotos/'+r.uid+'.jpg':''].map(v=>v===undefined?null:v));
       const out=d.export();d.close();
       const x=await this.put(this.DB,b64(out),'abastecimentos: +'+rows.length,cur&&cur.sha);
       if(x.ok){for(const r of rows){r.sincronizado=true;await save(r)}return}
