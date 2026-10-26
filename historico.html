@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0c141d">
+<title>Histórico HF28</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<style>
+:root{--bg:#0c141d;--ink:#e8eef5;--mut:#8ea0b3;--acc:#f5a524;--ok:#3ddc97;--bad:#ff6b6b;--line:rgba(255,255,255,.13);color-scheme:dark}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:radial-gradient(900px 520px at 85% -10%,#21405f 0,transparent 62%),radial-gradient(700px 420px at -10% 110%,#3a2a10 0,transparent 60%),var(--bg);background-attachment:fixed;color:var(--ink);font:17px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;min-height:100vh;padding:env(safe-area-inset-top) 16px calc(88px + env(safe-area-inset-bottom))}
+#main{max-width:720px;margin:0 auto;display:grid;gap:16px;padding-top:16px}
+h1{font-size:1.7rem;line-height:1.2;margin:.2em 0 .3em;letter-spacing:-.01em}
+h2{font-size:1.15rem;margin:0 0 .6em}
+p{margin:.3em 0}
+.m{color:var(--mut)}
+.g{background:rgba(255,255,255,.06);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);border:1px solid var(--line);border-radius:20px;padding:22px}
+.b{display:block;width:100%;min-height:58px;margin-top:12px;padding:14px 18px;font:inherit;font-weight:600;color:var(--ink);background:rgba(255,255,255,.08);border:1px solid var(--line);border-radius:16px;cursor:pointer}
+.b.p{background:var(--acc);border-color:var(--acc);color:#1b1200}
+.b:focus-visible,select:focus-visible,#nav button:focus-visible{outline:3px solid #7cc4ff;outline-offset:2px}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.kpi{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.kpi b{display:block;font-size:1.8rem;font-variant-numeric:tabular-nums}
+select{width:100%;margin-top:6px;padding:14px;font:inherit;color:var(--ink);background:rgba(0,0,0,.3);border:1px solid var(--line);border-radius:14px}
+label{display:block;color:var(--mut);font-size:.95rem}
+.ls{list-style:none;margin:14px 0 0;padding:0}
+.ls li{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 0;border-top:1px solid var(--line)}
+.ls span,.ls small{display:block}
+.lt{text-align:right;font-weight:700;white-space:nowrap}
+.bar{height:10px;border-radius:6px;background:var(--acc);margin-top:6px}
+.rk{display:block;padding:10px 0;border-top:1px solid var(--line)}
+.x{background:none;border:1px solid var(--line);color:var(--acc);border-radius:10px;padding:6px 12px;font:inherit;margin-top:4px}
+.warn{padding:12px 14px;border-radius:14px;background:rgba(255,107,107,.12);border:1px solid rgba(255,107,107,.4);color:#ffb3b3}
+#ov{position:fixed;inset:0;background:rgba(0,0,0,.85);display:grid;place-items:center;padding:16px;z-index:5}
+#ov[hidden]{display:none}
+#ov img{max-width:100%;max-height:100%;border-radius:14px}
+#nav{position:fixed;left:0;right:0;bottom:0;display:flex;gap:10px;padding:10px 16px calc(10px + env(safe-area-inset-bottom));background:rgba(12,20,29,.85);-webkit-backdrop-filter:blur(16px);backdrop-filter:blur(16px);border-top:1px solid var(--line)}
+#nav button{flex:1;min-height:56px;font:inherit;font-weight:600;color:var(--mut);background:none;border:1px solid transparent;border-radius:16px}
+#nav button.on{color:var(--acc);border-color:var(--acc);background:rgba(245,165,36,.1)}
+</style>
+</head>
+<body>
+<div id="main"></div>
+<div id="ov" hidden onclick="this.hidden=true"><img alt="Foto do visor de dosagem"></div>
+<nav id="nav"><button onclick="location.href='index.html'">Abastecer</button><button class="on">Histórico</button><button onclick="location.href='index.html#ajustes'">Ajustes</button></nav>
+<script src="gh.js"></script>
+<script>
+const $=s=>document.querySelector(s);
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmt=n=>Number(n||0).toLocaleString('pt-BR',{maximumFractionDigits:1});
+let ROWS=[],RANK=[],DB=null,F='';
+const qry=(d,q)=>{const st=d.prepare(q),o=[];while(st.step())o.push(st.getAsObject());st.free();return o};
+const box=h=>$('#main').innerHTML='<section class="g">'+h+'</section>';
+
+async function load(){
+  if(!GH.ok()){box('<h1>Histórico</h1><p class="m">Configure o GitHub em Ajustes para ler o banco.</p><button class="b p" onclick="location.href=\'index.html#ajustes\'">Abrir ajustes</button>');return}
+  box('<p class="m">Lendo o banco no GitHub...</p>');
+  try{
+    const cur=await GH.read();
+    if(!cur){box('<h1>Histórico</h1><p class="m">Nenhum abastecimento no banco ainda.</p><button class="b" onclick="load()">Atualizar</button>');return}
+    const S=await GH.sql(),d=new S.Database(cur.bytes);DB=cur.bytes;
+    ROWS=qry(d,'SELECT * FROM abastecimentos ORDER BY fim DESC');
+    RANK=qry(d,'SELECT maquina,COUNT(*) n,SUM(litros) total,AVG(litros) media FROM abastecimentos GROUP BY maquina ORDER BY total DESC');
+    d.close();draw();
+  }catch(e){box('<h1>Histórico</h1><p class="warn">Não foi possível ler o banco: '+esc(e.message)+'</p><button class="b" onclick="load()">Tentar de novo</button>')}
+}
+function draw(){
+  const rows=F?ROWS.filter(r=>r.maquina===F):ROWS;
+  const hoje=new Date().toDateString();
+  const tot=rows.reduce((s,r)=>s+r.litros,0),th=rows.filter(r=>new Date(r.fim).toDateString()===hoje).reduce((s,r)=>s+r.litros,0);
+  const max=Math.max(...RANK.map(r=>r.total),1);
+  $('#main').innerHTML=
+   '<section class="g"><h1>Histórico</h1><div class="kpi"><p class="m"><b>'+rows.length+'</b>abastecimentos</p><p class="m"><b>'+fmt(tot)+'</b>litros no total</p><p class="m"><b>'+fmt(th)+'</b>litros hoje</p></div>'
+   +'<div class="row"><button class="b" onclick="load()">Atualizar</button><button class="b" onclick="baixar()">Baixar banco (.db)</button></div></section>'
+   +'<section class="g"><h2>Consumo por máquina</h2><p class="m">Médias muito acima das outras podem indicar vazamento.</p>'
+   +RANK.map(r=>'<span class="rk"><b>'+esc(r.maquina)+'</b><span class="m"> '+fmt(r.total)+' L em '+r.n+' abastecimentos, média de '+fmt(r.media)+' L</span><div class="bar" style="width:'+Math.max(2,r.total/max*100)+'%"></div></span>').join('')+'</section>'
+   +'<section class="g"><h2>Abastecimentos</h2><label>Máquina<select onchange="F=this.value;draw()"><option value="">Todas</option>'+RANK.map(r=>'<option'+(r.maquina===F?' selected':'')+'>'+esc(r.maquina)+'</option>').join('')+'</select></label>'
+   +'<ul class="ls">'+rows.slice(0,100).map(r=>'<li><div><b>'+esc(r.maquina)+'</b><span class="m">'+esc(r.colaborador)+', '+new Date(r.fim).toLocaleString('pt-BR')+'</span>'+(r.obs?'<span class="m">'+esc(r.obs)+'</span>':'')+'</div><div class="lt">'+fmt(r.litros)+' L'+(r.foto?'<button class="x" data-p="'+esc(r.foto)+'" onclick="foto(this.dataset.p)">Ver foto</button>':'')+'</div></li>').join('')+'</ul></section>';
+}
+async function foto(p){
+  try{const r=await fetch(GH.u(p,1),{headers:GH.h(1)});if(!r.ok)throw new Error('GitHub '+r.status);$('#ov img').src=URL.createObjectURL(await r.blob());$('#ov').hidden=false}
+  catch(e){alert('Não foi possível abrir a foto: '+e.message)}
+}
+function baixar(){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([DB]));a.download='abastecimentos.db';a.click()}
+load();
+if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js');
+</script>
+</body>
+</html>
