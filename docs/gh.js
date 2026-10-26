@@ -3,7 +3,7 @@ const CDN='https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/';
 const b64=u=>{let s='';for(let i=0;i<u.length;i+=0x8000)s+=String.fromCharCode.apply(null,u.subarray(i,i+0x8000));return btoa(s)};
 const GH={
   DB:'data/abastecimentos.db',
-  SCHEMA:'CREATE TABLE IF NOT EXISTS abastecimentos(uid TEXT PRIMARY KEY,inicio TEXT,fim TEXT,duracao_s INTEGER,colaborador TEXT,cracha_id TEXT,maquina TEXT,totem_id TEXT,produto TEXT,litros REAL,obs TEXT,foto TEXT)',
+  SCHEMA:'CREATE TABLE IF NOT EXISTS abastecimentos(uid TEXT PRIMARY KEY,inicio TEXT,fim TEXT,duracao_s INTEGER,colaborador TEXT,cracha_id TEXT,maquina TEXT,totem_id TEXT,produto TEXT,litros REAL,obs TEXT,foto TEXT);CREATE TABLE IF NOT EXISTS pessoas(uid TEXT PRIMARY KEY,nome TEXT,nfc TEXT UNIQUE);CREATE TABLE IF NOT EXISTS maquinas(uid TEXT PRIMARY KEY,nome TEXT,nfc TEXT UNIQUE)',
   cfg(){try{return JSON.parse(localStorage.getItem('gh')||'{}')}catch(e){return{}}},
   set(c){localStorage.setItem('gh',JSON.stringify(c))},
   ok(){const c=this.cfg();return !!(c.repo&&c.token)},
@@ -31,6 +31,30 @@ const GH={
   },
   put(path,b64s,msg,sha){
     return fetch(this.u(path),{method:'PUT',headers:this.h(),body:JSON.stringify({message:msg,content:b64s,sha:sha||undefined,branch:this.cfg().branch||undefined})});
+  },
+  async cad(){
+    const cur=await this.read();if(!cur)return null;
+    const S=await this.sql(),d=new S.Database(cur.bytes);d.run(this.SCHEMA);
+    const q=t=>{const st=d.prepare('SELECT * FROM '+t+' ORDER BY nome'),o=[];while(st.step())o.push(st.getAsObject());st.free();return o};
+    const r={pessoas:q('pessoas'),maquinas:q('maquinas')};d.close();return r;
+  },
+  async edit(fn,msg){
+    try{
+      const S=await this.sql();
+      for(let t=0;t<4;t++){
+        const cur=await this.read(),d=cur&&cur.bytes.length?new S.Database(cur.bytes):new S.Database();
+        d.run(this.SCHEMA);await fn(d);
+        const out=d.export();d.close();
+        const x=await this.put(this.DB,b64(out),msg,cur&&cur.sha);
+        if(x.ok)return;
+        if(x.status!==409&&x.status!==422)throw new Error(x.status===401||x.status===403?'token sem permissão de escrita':'GitHub '+x.status);
+      }
+      throw new Error('conflito ao gravar, tente de novo');
+    }catch(e){throw new Error((e&&e.message)||String(e))}
+  },
+  async del(path){
+    const m=await fetch(this.u(path,1),{headers:this.h()});if(!m.ok)return;
+    await fetch(this.u(path),{method:'DELETE',headers:this.h(),body:JSON.stringify({message:'remove '+path,sha:(await m.json()).sha,branch:this.cfg().branch||undefined})});
   },
   async push(rows,save){
     try{await this._push(rows,save)}catch(e){throw new Error((e&&e.message)||String(e))}
