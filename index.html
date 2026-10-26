@@ -5,6 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0c141d">
 <title>Abastecimento HF28</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
 <style>
 :root{--bg:#0c141d;--ink:#e8eef5;--mut:#8ea0b3;--acc:#f5a524;--ok:#3ddc97;--bad:#ff6b6b;--line:rgba(255,255,255,.13);color-scheme:dark}
 *{box-sizing:border-box}
@@ -53,8 +56,9 @@ input{display:block;width:100%;margin-top:6px;padding:14px;font:inherit;color:va
 </head>
 <body>
 <div id="main"></div>
-<nav id="nav"><button data-t="a" onclick="go('a')">Abastecer</button><button data-t="h" onclick="go('h')">Histórico</button></nav>
+<nav id="nav"><button data-t="a" onclick="go('a')">Abastecer</button><button data-t="h" onclick="location.href='historico.html'">Histórico</button><button data-t="c" onclick="go('c')">Ajustes</button></nav>
 <div id="toast" role="status"></div>
+<script src="gh.js"></script>
 <script>
 const $=s=>document.querySelector(s);
 const S={step:0,w:null,m:null,t0:null,photo:null,nfc:false,tab:'a'};
@@ -93,18 +97,14 @@ async function exportHour(h,novo){
 }
 async function exportAll(){dl('abastecimentos_todos_'+hk(new Date())+'.csv','\ufeff'+csv((await all()).sort((a,b)=>a.id-b.id)),'text/csv;charset=utf-8')}
 
-/* Envio opcional para a rede */
+/* Envio ao banco SQL no GitHub */
+let syncing=false;
 async function sync(){
-  const u=localStorage.getItem('url');if(!u)return 0;let n=0;
-  for(const r of (await all()).filter(r=>!r.sincronizado)){
-    try{const x=await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(r)});if(!x.ok)throw 0;r.sincronizado=true;await put(r);n++}catch(e){break}
-  }
-  return n;
+  if(syncing)return;syncing=true;
+  try{const rows=(await all()).filter(r=>!r.sincronizado).sort((a,b)=>a.id-b.id);if(rows.length)await GH.push(rows,put)}
+  finally{syncing=false}
 }
-async function setUrl(){
-  localStorage.setItem('url',$('#url').value.trim());
-  const n=await sync();toast(n?n+' registro(s) enviado(s).':'Endereço salvo.');hist();
-}
+addEventListener('online',()=>sync().then(()=>toast('Pendentes enviados.')).catch(()=>{}));
 
 /* NFC */
 function tag(id){
@@ -135,24 +135,25 @@ function go(t){S.tab=t;render()}
 function reset(){S.step=0;S.w=S.m=S.t0=S.photo=null;render()}
 function photo(i){
   const f=i.files[0];if(!f)return;const im=new Image();
-  im.onload=()=>{const k=Math.min(1,1000/Math.max(im.width,im.height)),c=document.createElement('canvas');c.width=im.width*k;c.height=im.height*k;c.getContext('2d').drawImage(im,0,0,c.width,c.height);S.photo=c.toDataURL('image/jpeg',.72);$('#pv').src=S.photo;$('#pv').hidden=false;URL.revokeObjectURL(im.src)};
+  im.onload=()=>{const k=Math.min(1,720/Math.max(im.width,im.height)),c=document.createElement('canvas');c.width=im.width*k;c.height=im.height*k;c.getContext('2d').drawImage(im,0,0,c.width,c.height);S.photo=c.toDataURL('image/jpeg',.6);$('#pv').src=S.photo;$('#pv').hidden=false;URL.revokeObjectURL(im.src)};
   im.src=URL.createObjectURL(f);
 }
 async function save(){
   const l=parseFloat(($('#lt').value||'').replace(',','.'));
   if(!(l>0)){toast('Informe os litros abastecidos.',1);return}
   const fim=new Date();
-  const r={inicio:S.t0.toISOString(),fim:fim.toISOString(),hora:hk(fim),duracao_s:Math.round((fim-S.t0)/1000),colaborador:S.w.name,cracha_id:S.w.id,maquina:S.m.name,totem_id:S.m.id,produto:'HF28',litros:l,obs:$('#ob').value.trim(),foto:S.photo,sincronizado:false};
+  const r={uid:crypto.randomUUID(),inicio:S.t0.toISOString(),fim:fim.toISOString(),hora:hk(fim),duracao_s:Math.round((fim-S.t0)/1000),colaborador:S.w.name,cracha_id:S.w.id,maquina:S.m.name,totem_id:S.m.id,produto:'HF28',litros:l,obs:$('#ob').value.trim(),foto:S.photo,sincronizado:false};
   try{r.id=await put(r)}catch(e){toast('Erro ao gravar no banco: '+e.message,1);return}
-  await exportHour(r.hora,r);
-  sync();reset();toast('Abastecimento salvo.');
+  if(localStorage.getItem('csv')!=='0')await exportHour(r.hora,r);
+  reset();toast('Salvando no banco do GitHub...');
+  try{await sync();toast('Salvo no banco do GitHub.')}catch(e){toast('Salvo no tablet. Envio pendente: '+e.message,1)}
 }
-function delReg(k,i){if(confirm('Remover este cadastro?')){delete reg[k][i];saveReg();hist()}}
+function delReg(k,i){if(confirm('Remover este cadastro?')){delete reg[k][i];saveReg();cfg()}}
 
 /* Telas */
 function render(){
   document.querySelectorAll('#nav button').forEach(b=>b.classList.toggle('on',b.dataset.t===S.tab));
-  if(S.tab==='h')return hist();
+  if(S.tab==='c')return cfg();
   const L=['Crachá','Máquina','Abastecer','Registrar'];
   let h=window.isSecureContext?'':'<p class="warn">Esta página não está em HTTPS, então o NFC não funciona. Publique no GitHub Pages ou use o código digitado.</p>';
   h+='<div class="steps">'+L.map((x,i)=>'<span class="'+(i<S.step?'done':i===S.step?'cur':'')+'">'+x+'</span>').join('')+'</div>';
@@ -176,17 +177,29 @@ function render(){
   }
   $('#main').innerHTML=h;
 }
-async function hist(){
-  const rows=(await all()).sort((a,b)=>b.id-a.id);
-  const tot=rows.reduce((s,r)=>s+r.litros,0);
-  const li=rows.slice(0,40).map(r=>'<li><div><b>'+esc(r.maquina)+'</b><span class="m">'+esc(r.colaborador)+', '+new Date(r.fim).toLocaleString('pt-BR')+'</span></div><div class="lt">'+fmt(r.litros)+' L<small class="'+(r.sincronizado?'ok':'m')+'">'+(r.sincronizado?'enviado':'só no tablet')+'</small></div></li>').join('')||'<li class="m">Nenhum abastecimento salvo ainda.</li>';
+let dp;
+addEventListener('beforeinstallprompt',e=>{e.preventDefault();dp=e;if(S.tab==='c')cfg()});
+function instalar(){if(dp){dp.prompt();dp=null;cfg()}}
+async function enviar(){toast('Enviando...');try{await sync();toast('Enviado ao banco do GitHub.')}catch(e){toast('Falha no envio: '+e.message,1)}cfg()}
+async function saveGh(){
+  GH.set({repo:$('#gr').value.trim(),branch:$('#gb').value.trim()||'main',token:$('#gt').value.trim()});
+  try{const priv=await GH.test();toast(priv?'Conectado ao repositório privado.':'Conectado, mas o repositório é público: os dados ficam visíveis a todos.',!priv)}
+  catch(e){toast('Falha: '+e.message,1)}
+}
+function togCsv(){localStorage.setItem('csv',localStorage.getItem('csv')==='0'?'1':'0');cfg()}
+async function cfg(){
+  const c=GH.cfg(),n=(await all()).filter(r=>!r.sincronizado).length;
   let cad='';
   for(const k of ['w','m'])for(const i in reg[k])cad+='<li><div><b>'+esc(reg[k][i])+'</b><span class="m">'+(k==='w'?'Crachá':'Totem')+' '+esc(i)+'</span></div><button class="x" data-i="'+esc(i)+'" onclick="delReg(\''+k+'\',this.dataset.i)">Remover</button></li>';
-  $('#main').innerHTML='<section class="g"><h1>Histórico</h1><p class="m">'+rows.length+' registros, '+fmt(tot.toFixed(1))+' L no total</p>'
-    +'<div class="row"><button class="b" onclick="exportHour(hk(new Date()))">Exportar hora atual</button><button class="b" onclick="exportAll()">Exportar tudo</button></div><ul class="ls">'+li+'</ul></section>'
-    +'<section class="g"><h2>Envio para a rede</h2><p class="m">Opcional. Quando houver um servidor, cada registro é enviado por POST em JSON.</p><label>Endereço do servidor<input id="url" value="'+esc(localStorage.getItem('url')||'')+'" placeholder="http://192.168.0.10:8000/api/abastecimentos"></label><button class="b" onclick="setUrl()">Salvar endereço e enviar pendentes</button></section>'
+  $('#main').innerHTML='<section class="g"><h1>Ajustes</h1><p class="m">'+(n?n+' abastecimento(s) aguardando envio ao GitHub.':'Tudo enviado ao banco do GitHub.')+'</p>'
+    +(n?'<button class="b p" onclick="enviar()">Enviar pendentes agora</button>':'')
+    +(dp?'<button class="b" onclick="instalar()">Instalar como app</button>':'<p class="m">Para instalar como app: menu do Chrome, Instalar app.</p>')+'</section>'
+    +'<section class="g"><h2>Banco no GitHub</h2><label>Repositório dos dados (usuario/nome)<input id="gr" value="'+esc(c.repo||'')+'" placeholder="usuario/lubrificacao-dados" autocapitalize="off"></label><label>Branch<input id="gb" value="'+esc(c.branch||'main')+'"></label><label>Token de acesso<input id="gt" type="password" value="'+esc(c.token||'')+'" autocomplete="off"></label><button class="b" onclick="saveGh()">Salvar e testar conexão</button></section>'
+    +'<section class="g"><h2>Arquivos na pasta Downloads</h2><button class="b" onclick="togCsv()">CSV da hora ao salvar: '+(localStorage.getItem('csv')==='0'?'desligado':'ligado')+'</button></section>'
     +'<section class="g"><h2>Crachás e totens cadastrados</h2><ul class="ls">'+(cad||'<li class="m">Os cadastros aparecem aqui na primeira leitura de cada tag.</li>')+'</ul></section>';
 }
+if(location.hash==='#ajustes')S.tab='c';
+if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js');
 setInterval(()=>{const e=$('#tm');if(e&&S.t0){const s=Math.floor((Date.now()-S.t0)/1000);e.textContent=p2(Math.floor(s/60))+':'+p2(s%60)}},1000);
 </script>
 </body>
