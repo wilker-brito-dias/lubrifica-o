@@ -28,9 +28,10 @@ input,select{display:block;width:100%;margin-top:6px;padding:14px;font:inherit;c
 .ls span{display:block}
 .lt{text-align:right;font-weight:700;white-space:nowrap}
 .x{display:block;margin:4px 0 0 auto;background:none;border:1px solid var(--line);color:var(--acc);border-radius:10px;padding:8px 14px;font:inherit}
+.ok{color:var(--ok)}
 .warn{padding:12px 14px;border-radius:14px;background:rgba(255,107,107,.12);border:1px solid rgba(255,107,107,.4);color:#ffb3b3}
 #nav{position:fixed;left:0;right:0;bottom:0;display:flex;gap:8px;padding:10px 12px calc(10px + env(safe-area-inset-bottom));background:rgba(12,20,29,.85);-webkit-backdrop-filter:blur(16px);backdrop-filter:blur(16px);border-top:1px solid var(--line)}
-#nav button{flex:1;min-height:56px;font:inherit;font-weight:600;color:var(--mut);background:none;border:1px solid transparent;border-radius:16px}
+#nav button{flex:1;min-height:56px;padding:0 2px;font:inherit;font-size:.92rem;font-weight:600;color:var(--mut);background:none;border:1px solid transparent;border-radius:16px}
 #nav button.on{color:var(--acc);border-color:var(--acc);background:rgba(245,165,36,.1)}
 #toast{position:fixed;left:16px;right:16px;bottom:calc(92px + env(safe-area-inset-bottom));max-width:560px;margin:0 auto;padding:14px 18px;border-radius:14px;background:#12382b;border:1px solid var(--ok);opacity:0;pointer-events:none;transition:opacity .2s}
 #toast.bad{background:#3a1717;border-color:var(--bad)}
@@ -39,7 +40,7 @@ input,select{display:block;width:100%;margin-top:6px;padding:14px;font:inherit;c
 </head>
 <body>
 <div id="main"></div>
-<nav id="nav"><button data-t="r" onclick="TAB='r';draw()">Registros</button><button data-t="p" onclick="TAB='p';draw()">Pessoas</button><button data-t="m" onclick="TAB='m';draw()">Máquinas</button><button onclick="location.href='index.html'">Voltar</button></nav>
+<nav id="nav"><button data-t="r" onclick="TAB='r';draw()">Registros</button><button data-t="p" onclick="TAB='p';draw()">Pessoas</button><button data-t="m" onclick="TAB='m';draw()">Máquinas</button><button data-t="o" onclick="TAB='o';draw()">Óleo</button><button onclick="location.href='index.html'">Voltar</button></nav>
 <div id="toast" role="status"></div>
 <script src="gh.js"></script>
 <script>
@@ -62,9 +63,9 @@ async function load(){
   box('<p class="m">Lendo o banco no GitHub...</p>');
   try{
     const cur=await GH.read(),S=await GH.sql(),d=cur?new S.Database(cur.bytes):new S.Database();
-    d.run(GH.SCHEMA);
+    GH.prep(d);
     ROWS=qry(d,'SELECT * FROM abastecimentos ORDER BY fim DESC');
-    CAD={pessoas:qry(d,'SELECT * FROM pessoas ORDER BY nome'),maquinas:qry(d,'SELECT * FROM maquinas ORDER BY nome')};
+    CAD={pessoas:qry(d,'SELECT * FROM pessoas ORDER BY nome'),maquinas:qry(d,'SELECT * FROM maquinas ORDER BY nome'),oleos:qry(d,'SELECT * FROM oleos ORDER BY nome')};
     d.close();draw();
   }catch(e){box('<h1>Administração</h1><p class="warn">Não foi possível ler o banco: '+esc((e&&e.message)||e)+'</p><button class="b" onclick="load()">Tentar de novo</button>')}
 }
@@ -78,6 +79,7 @@ const localReg=()=>{try{return JSON.parse(localStorage.getItem('reg')||'{}')}cat
 const pend=t=>{const r=localReg()[t==='pessoas'?'w':'m']||{};return Object.keys(r).filter(id=>!CAD[t].some(x=>x.nfc===id)).length};
 function draw(){
   document.querySelectorAll('#nav button[data-t]').forEach(b=>b.classList.toggle('on',b.dataset.t===TAB));
+  if(TAB==='o')return drawO();
   if(TAB==='r'){
     const ms=[...new Set(ROWS.map(r=>r.maquina))].sort(),rows=F?ROWS.filter(r=>r.maquina===F):ROWS;
     $('#main').innerHTML='<section class="g"><h1>Registros</h1><label>Máquina<select onchange="F=this.value;draw()"><option value="">Todas</option>'+ms.map(m=>'<option'+(m===F?' selected':'')+'>'+esc(m)+'</option>').join('')+'</select></label><ul class="ls">'
@@ -89,21 +91,52 @@ function draw(){
       +(CAD[t].map(x=>'<li><div><b>'+esc(x.nome)+'</b><span class="m">NFC '+esc(x.nfc)+'</span></div><button class="x" data-u="'+esc(x.uid)+'" onclick="fCad(\''+k+'\',this.dataset.u)">Editar</button></li>').join('')||'<li class="m">Nada cadastrado ainda.</li>')+'</ul></section>';
   }
 }
+function drawO(){
+  $('#main').innerHTML='<section class="g"><h1>Óleo</h1><p class="m">Dados do óleo usado nos abastecimentos. O preço entra no cálculo de gastos do histórico.</p><button class="b p" onclick="fOleo()">Adicionar óleo</button><ul class="ls">'
+    +(CAD.oleos.map(o=>'<li><div><b>'+esc(o.nome)+'</b>'+(o.ativo?'<small class="ok"> (em uso)</small>':'')+'<span class="m">'+esc(o.viscosidade||'')+(o.codigo?', requisição '+esc(o.codigo):'')+(o.preco!=null?', R$ '+fmt(o.preco)+' por litro':'')+'</span></div><button class="x" data-u="'+esc(o.uid)+'" onclick="fOleo(this.dataset.u)">Editar</button></li>').join('')||'<li class="m">Nenhum óleo cadastrado ainda.</li>')+'</ul></section>';
+}
+function fOleo(u){
+  const o=u?CAD.oleos.find(x=>x.uid===u):{nome:'HF28',viscosidade:'',codigo:'',preco:'',fornecedor:'',bombona:'',obs:'',ativo:CAD.oleos.length?0:1};
+  const f=(id,t,v,ex)=>'<label>'+t+'<input id="'+id+'" value="'+esc(v==null?'':v)+'" '+(ex||'')+'></label>';
+  box('<h1>'+(u?'Editar':'Novo')+' óleo</h1><p class="m">Abastecimentos novos guardam o preço do momento. Os que não têm preço usam o do óleo em uso.</p>'
+    +f('on','Nome do óleo',o.nome)+f('ov','Viscosidade (ex.: ISO VG 28)',o.viscosidade)+f('oc','Código de requisição',o.codigo)
+    +f('op','Preço por litro (R$)',o.preco,'inputmode="decimal"')+f('of','Fornecedor',o.fornecedor)+f('ob','Volume da bombona (litros)',o.bombona,'inputmode="decimal"')+f('oo','Observação',o.obs)
+    +'<label>Em uso nos abastecimentos<select id="oa"><option value="1"'+(o.ativo?' selected':'')+'>Sim</option><option value="0"'+(o.ativo?'':' selected')+'>Não</option></select></label>'
+    +'<button class="b p" onclick="saveOleo(\''+(u||'')+'\')">Salvar</button>'+(u?'<button class="b d" onclick="delOleo(\''+u+'\')">Excluir óleo</button>':'')+'<button class="b" onclick="draw()">Cancelar</button>');
+}
+async function saveOleo(u){
+  const num=i=>{const v=$(i).value.trim().replace(',','.');return v===''?null:parseFloat(v)};
+  const n=$('#on').value.trim(),pr=num('#op'),bo=num('#ob');
+  if(!n){toast('Informe o nome do óleo.',1);return}
+  if((pr!=null&&!(pr>=0))||(bo!=null&&!(bo>=0))){toast('Preço e volume devem ser números válidos.',1);return}
+  const at=+$('#oa').value,id=u||crypto.randomUUID(),v=[n,$('#ov').value.trim(),$('#oc').value.trim(),pr,$('#of').value.trim(),bo,$('#oo').value.trim(),at];
+  await run(d=>{
+    if(u)d.run('UPDATE oleos SET nome=?,viscosidade=?,codigo=?,preco=?,fornecedor=?,bombona=?,obs=?,ativo=? WHERE uid=?',v.concat(u));
+    else d.run('INSERT INTO oleos VALUES (?,?,?,?,?,?,?,?,?)',[id].concat(v));
+    if(at)d.run('UPDATE oleos SET ativo=0 WHERE uid<>?',[id]);
+  },'admin: óleo');
+}
+async function delOleo(u){
+  if(confirm('Excluir este óleo do cadastro? Os abastecimentos antigos continuam no histórico.'))await run(d=>d.run('DELETE FROM oleos WHERE uid=?',[u]),'admin: excluir óleo','Óleo excluído.');
+}
 function fRec(u){
   const r=ROWS.find(x=>x.uid===u),opt=(l,cur)=>'<option value="">(manter) '+esc(cur)+'</option>'+l.map(x=>'<option value="'+esc(x.uid)+'">'+esc(x.nome)+'</option>').join('');
   box('<h1>Editar registro</h1><p class="m">'+new Date(r.fim).toLocaleString('pt-BR')+'</p>'
     +'<label>Litros<input id="el" type="number" step="0.01" inputmode="decimal" value="'+esc(r.litros)+'"></label>'
     +'<label>Colaborador<select id="ep">'+opt(CAD.pessoas,r.colaborador)+'</select></label>'
     +'<label>Máquina<select id="em">'+opt(CAD.maquinas,r.maquina)+'</select></label>'
+    +'<label>Preço por litro (R$)<input id="epr" inputmode="decimal" value="'+esc(r.preco==null?'':r.preco)+'" placeholder="usa o preço do óleo em uso"></label>'
     +'<label>Observação<input id="eo" value="'+esc(r.obs)+'"></label>'
     +'<button class="b p" onclick="saveRec(\''+esc(u)+'\')">Salvar</button><button class="b d" onclick="delRec(\''+esc(u)+'\')">Excluir registro</button><button class="b" onclick="draw()">Cancelar</button>');
 }
 async function saveRec(u){
   const l=parseFloat(($('#el').value||'').replace(',','.'));
   if(!(l>=0)){toast('Informe um valor de litros válido.',1);return}
+  const pr=($('#epr').value||'').trim().replace(',','.'),pv=pr===''?null:parseFloat(pr);
+  if(pv!=null&&!(pv>=0)){toast('Preço inválido.',1);return}
   const o=$('#eo').value.trim(),p=CAD.pessoas.find(x=>x.uid===$('#ep').value),m=CAD.maquinas.find(x=>x.uid===$('#em').value);
   await run(d=>{
-    d.run('UPDATE abastecimentos SET litros=?,obs=? WHERE uid=?',[l,o,u]);
+    d.run('UPDATE abastecimentos SET litros=?,obs=?,preco=? WHERE uid=?',[l,o,pv,u]);
     if(p)d.run('UPDATE abastecimentos SET colaborador=?,cracha_id=? WHERE uid=?',[p.nome,p.nfc,u]);
     if(m)d.run('UPDATE abastecimentos SET maquina=?,totem_id=? WHERE uid=?',[m.nome,m.nfc,u]);
   },'admin: editar registro');
