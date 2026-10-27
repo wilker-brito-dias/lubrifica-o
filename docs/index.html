@@ -9,7 +9,7 @@
 <link rel="icon" href="icon-192.png">
 <link rel="apple-touch-icon" href="icon-192.png">
 <style>
-:root{--bg:#0c141d;--ink:#e8eef5;--mut:#8ea0b3;--acc:#f5a524;--ok:#3ddc97;--bad:#ff6b6b;--line:rgba(255,255,255,.13);color-scheme:dark}
+:root{--bg:#0c141d;--ink:#e8eef5;--mut:#8ea0b3;--acc:#f5a524;--ok:#3ddc97;--bad:#ff6b6b;--ble:#2b80ff;--line:rgba(255,255,255,.13);color-scheme:dark}
 *{box-sizing:border-box}
 html,body{margin:0}
 body{background:radial-gradient(900px 520px at 85% -10%,#21405f 0,transparent 62%),radial-gradient(700px 420px at -10% 110%,#3a2a10 0,transparent 60%),var(--bg);background-attachment:fixed;color:var(--ink);font:17px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;min-height:100vh;padding:env(safe-area-inset-top) 16px calc(88px + env(safe-area-inset-bottom))}
@@ -33,8 +33,11 @@ p{margin:.3em 0}
 .tm{font-size:3.4rem;font-weight:700;font-variant-numeric:tabular-nums;color:var(--acc);margin:.2em 0 .5em}
 .b{display:block;width:100%;min-height:58px;margin-top:12px;padding:14px 18px;font:inherit;font-weight:600;color:var(--ink);background:rgba(255,255,255,.08);border:1px solid var(--line);border-radius:16px;cursor:pointer}
 .b.p{background:var(--acc);border-color:var(--acc);color:#1b1200}
+.b.ble{background:var(--ble);border-color:var(--ble);color:#fff}
+.b:disabled{opacity: 0.5; pointer-events: none;}
 .b:focus-visible,input:focus-visible,#nav button:focus-visible{outline:3px solid #7cc4ff;outline-offset:2px}
 .b.d{color:var(--bad);border-color:rgba(255,107,107,.5)}
+.b.r{background:var(--bad);border-color:var(--bad);color:#fff}
 .row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 label{display:block;margin-top:16px;color:var(--mut);font-size:.95rem}
 input{display:block;width:100%;margin-top:6px;padding:14px;font:inherit;color:var(--ink);background:rgba(0,0,0,.3);border:1px solid var(--line);border-radius:14px}
@@ -50,9 +53,17 @@ input{display:block;width:100%;margin-top:6px;padding:14px;font:inherit;color:va
 #nav{position:fixed;left:0;right:0;bottom:0;display:flex;gap:10px;padding:10px 16px calc(10px + env(safe-area-inset-bottom));background:rgba(12,20,29,.85);-webkit-backdrop-filter:blur(16px);backdrop-filter:blur(16px);border-top:1px solid var(--line)}
 #nav button{flex:1;min-height:56px;font:inherit;font-weight:600;color:var(--mut);background:none;border:1px solid transparent;border-radius:16px}
 #nav button.on{color:var(--acc);border-color:var(--acc);background:rgba(245,165,36,.1)}
-#toast{position:fixed;left:16px;right:16px;bottom:calc(92px + env(safe-area-inset-bottom));max-width:560px;margin:0 auto;padding:14px 18px;border-radius:14px;background:#12382b;border:1px solid var(--ok);opacity:0;pointer-events:none;transition:opacity .2s}
+#toast{position:fixed;left:16px;right:16px;bottom:calc(92px + env(safe-area-inset-bottom));max-width:560px;margin:0 auto;padding:14px 18px;border-radius:14px;background:#12382b;border:1px solid var(--ok);opacity:0;pointer-events:none;transition:opacity .2s;z-index:999;}
 #toast.bad{background:#3a1717;border-color:var(--bad)}
 #toast.show{opacity:1}
+/* ESP32 Status UI */
+.esp-card {display: flex; align-items: center; justify-content: space-between; padding: 16px; background: rgba(0,0,0,0.4); border-radius: 16px; border: 1px solid var(--line); margin-bottom: 16px;}
+.esp-icon {width: 50px; height: 50px; border-radius: 12px; background: var(--line); display: grid; place-items: center; font-size: 1.5rem;}
+.esp-icon.on {background: var(--ok); color: #000;}
+.esp-info h3 {margin: 0 0 4px; font-size: 1.1rem;}
+.esp-info p {margin: 0; font-size: 0.85rem;}
+.esp-status-off {color: var(--bad);}
+.esp-status-on {color: var(--ok); font-weight: bold;}
 </style>
 </head>
 <body>
@@ -70,6 +81,58 @@ const hk=d=>d.getFullYear()+'-'+p2(d.getMonth()+1)+'-'+p2(d.getDate())+'_'+p2(d.
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt=n=>String(n).replace('.',',');
 function toast(t,bad){const e=$('#toast');e.textContent=t;e.className='show'+(bad?' bad':'');clearTimeout(toast.k);toast.k=setTimeout(()=>e.className='',4000)}
+
+/* ------------------- BLUETOOTH BLE ESP32 ------------------- */
+const BLE = {
+  device: null,
+  characteristic: null,
+  serviceUuid: "0000aaaa-0000-1000-8000-00805f9b34fb",
+  charUuid: "0000bbbb-0000-1000-8000-00805f9b34fb",
+  
+  async connect() {
+    if (!navigator.bluetooth) {
+      toast("Bluetooth não suportado neste navegador.", 1); return;
+    }
+    try {
+      toast("Buscando ESP32...");
+      this.device = await navigator.bluetooth.requestDevice({
+        filters: [{ namePrefix: "Bomba" }, { services: [this.serviceUuid] }],
+        optionalServices: [this.serviceUuid]
+      });
+      
+      this.device.addEventListener('gattserverdisconnected', () => {
+        BLE.characteristic = null;
+        render();
+        toast("ESP32 Desconectado!", 1);
+      });
+
+      const server = await this.device.gatt.connect();
+      const service = await server.getPrimaryService(this.serviceUuid);
+      this.characteristic = await service.getCharacteristic(this.charUuid);
+      
+      toast("ESP32 Conectado com sucesso!");
+      render();
+    } catch (e) {
+      toast("Falha na conexão: " + e.message, 1);
+    }
+  },
+  
+  async sendCommand(cmd) {
+    if (!this.characteristic) { toast("ESP32 não conectado!", 1); return; }
+    try {
+      let encoder = new TextEncoder();
+      await this.characteristic.writeValue(encoder.encode(cmd));
+    } catch (e) {
+      toast("Erro ao enviar comando: " + e.message, 1);
+    }
+  },
+  
+  isConnected() {
+    return this.characteristic != null;
+  }
+};
+/* ------------------------------------------------------------- */
+
 
 /* Banco local (IndexedDB) */
 let db;
@@ -113,10 +176,13 @@ function tag(id){
   const k=S.step===0?'w':'m';
   let name=reg[k][id];
   if(!name){toast((k==='w'?'Crachá':'Totem')+' não cadastrado ('+id+'). Peça ao administrador.',1);return}
-  if(k==='w')S.w={id,name};else{S.m={id,name};S.t0=new Date()}
+  if(k==='w')S.w={id,name};else{S.m={id,name};} // Não iniciar timer aqui ainda
   S.step++;render();if(navigator.vibrate)navigator.vibrate(120);
 }
-function manual(){const id=prompt(S.step===0?'Código do crachá:':'Código do totem da máquina:');if(id)tag(id.trim())}
+function manual(){
+    if(!BLE.isConnected()){ toast('A conexão Bluetooth com o ESP32 deve ser realizada primeiro.', 1); return; }
+    const id=prompt(S.step===0?'Código do crachá:':'Código do totem da máquina:');if(id)tag(id.trim())
+}
 const oleo=()=>{try{return JSON.parse(localStorage.getItem('oleo')||'null')}catch(e){return null}};
 const prod=()=>{const o=oleo();return o&&o.nome?o.nome+(o.viscosidade?' '+o.viscosidade:''):'HF28'};
 function oleoCard(){
@@ -133,18 +199,38 @@ function stopNFC(){
   render();toast('Leitura NFC parada.');
 }
 async function startNFC(){
-  if(!('NDEFReader' in window)){toast('Este navegador não tem NFC web. Use o Chrome no Android com a página em HTTPS, ou digite o código.',1);return}
+  if(!BLE.isConnected()){ toast('A conexão Bluetooth com o ESP32 deve ser realizada primeiro.', 1); return; }
+  if(!('NDEFReader' in window)){toast('Navegador sem NFC. Use Chrome Android ou digite.',1);return}
   try{
     const r=new NDEFReader();S.ctl=new AbortController();await r.scan({signal:S.ctl.signal});
     r.onreading=e=>{let id=e.serialNumber;for(const x of e.message.records)if(x.recordType==='text'){id=new TextDecoder(x.encoding||'utf-8').decode(x.data);break}tag(id)};
-    r.onreadingerror=()=>toast('Não consegui ler a tag. Tente de novo ou digite o código.',1);
+    r.onreadingerror=()=>toast('Falha na leitura. Tente de novo.',1);
     S.nfc=true;render();
-  }catch(e){toast('NFC bloqueado ('+e.message+'). Ative o NFC do tablet e permita no navegador.',1)}
+  }catch(e){toast('NFC bloqueado. Ative no tablet.',1)}
 }
 
-/* Fluxo */
+/* Fluxo de Liberação da Bomba */
+async function iniciarAbastecimento(){
+    await BLE.sendCommand("1"); // Comando para Ligar a Bomba
+    toast('Relé Ativado. Bomba Liberada!');
+    S.t0=new Date();
+    S.step=2; 
+    render();
+}
+
+async function finalizarAbastecimento(){
+    await BLE.sendCommand("0"); // Comando para Desligar a Bomba
+    toast('Relé Desativado. Bomba Cortada.', 1);
+    S.step=3; 
+    render();
+}
+
 function go(t){S.tab=t;render()}
-function reset(){S.step=0;S.w=S.m=S.t0=S.photo=null;render()}
+async function reset(){
+  // Garante que a bomba não fique ligada se o cara cancelar no meio
+  if(S.step === 2 && BLE.isConnected()) await BLE.sendCommand("0");
+  S.step=0;S.w=S.m=S.t0=S.photo=null;render()
+}
 function photo(i){
   const f=i.files[0];if(!f)return;const im=new Image();
   im.onload=()=>{const k=Math.min(1,720/Math.max(im.width,im.height)),c=document.createElement('canvas');c.width=im.width*k;c.height=im.height*k;c.getContext('2d').drawImage(im,0,0,c.width,c.height);S.photo=c.toDataURL('image/jpeg',.6);$('#pv').src=S.photo;$('#pv').hidden=false;URL.revokeObjectURL(im.src)};
@@ -153,7 +239,7 @@ function photo(i){
 async function save(){
   const l=parseFloat(($('#lt').value||'').replace(',','.'));
   if(!(l>0)){toast('Informe os litros abastecidos.',1);return}
-  if(!S.photo){toast('Tire a foto do visor de dosagem. Ela é obrigatória para salvar.',1);return}
+  if(!S.photo){toast('Tire a foto do visor de dosagem. Ela é obrigatória.',1);return}
   const fim=new Date();
   const r={uid:crypto.randomUUID(),inicio:S.t0.toISOString(),fim:fim.toISOString(),hora:hk(fim),duracao_s:Math.round((fim-S.t0)/1000),colaborador:S.w.name,cracha_id:S.w.id,maquina:S.m.name,totem_id:S.m.id,produto:prod(),oleo:(oleo()||{}).nome||'HF28',preco:oleo()&&oleo().preco!=null?oleo().preco:null,litros:l,obs:$('#ob').value.trim(),foto:S.photo,sincronizado:false};
   try{r.id=await put(r)}catch(e){toast('Erro ao gravar no banco: '+e.message,1);return}
@@ -167,8 +253,25 @@ function delReg(k,i){if(confirm('Remover este cadastro?')){delete reg[k][i];save
 function render(){
   document.querySelectorAll('#nav button').forEach(b=>b.classList.toggle('on',b.dataset.t===S.tab));
   if(S.tab==='c')return cfg();
-  const L=['Crachá','Máquina','Abastecer','Registrar'];
-  let h=window.isSecureContext?'':'<p class="warn">Esta página não está em HTTPS, então o NFC não funciona. Publique no GitHub Pages ou use o código digitado.</p>';
+  
+  // Painel Bluetooth
+  let bleUI = `
+    <div class="esp-card" onclick="BLE.connect()">
+      <div class="esp-icon ${BLE.isConnected() ? 'on' : ''}">
+        ${BLE.isConnected() ? '&#9728;' : '&#9842;'} 
+      </div>
+      <div class="esp-info">
+        <h3>Bomba ESP32</h3>
+        <p class="${BLE.isConnected() ? 'esp-status-on' : 'esp-status-off'}">${BLE.isConnected() ? 'Conectado. Pronto para liberar.' : 'Desconectado. Toque para parear.'}</p>
+      </div>
+    </div>
+  `;
+
+  const L=['Crachá','Máquina','Liberar Bomba','Registrar'];
+  let h=window.isSecureContext?'':'<p class="warn">Esta página não está em HTTPS, NFC/Bluetooth não funcionam.</p>';
+  
+  if (S.step === 0) h += bleUI; // Só mostra painel BLE no início
+
   h+='<div class="steps">'+L.map((x,i)=>'<span class="'+(i<S.step?'done':i===S.step?'cur':'')+'">'+x+'</span>').join('')+'</div>';
   if(S.step<2){
     const w=S.step===0;
@@ -178,15 +281,22 @@ function render(){
       +(S.nfc?'<button class="b" onclick="stopNFC()">Parar leitura NFC</button>':'<button class="b p" onclick="startNFC()">Ativar leitura NFC</button>')
       +'<button class="b" onclick="manual()">Digitar código</button></section>'+oleoCard();
   }else if(S.step===2){
-    h+='<section class="g c"><p class="m">Colaborador</p><p class="who">'+esc(S.w.name)+'</p><p class="m">Máquina</p><p class="who">'+esc(S.m.name)+'</p><p class="m">Produto: '+esc(prod())+'</p><div class="tm" id="tm">00:00</div>'
-      +'<button class="b p" onclick="S.step=3;render()">Finalizar abastecimento</button><button class="b" onclick="reset()">Cancelar</button></section>';
+    // STEP 2: Tudo LIDO. Mostra botão GIGANTE para liberar
+    if(!S.t0) {
+        h+='<section class="g c"><p class="m">Colaborador</p><p class="who">'+esc(S.w.name)+'</p><p class="m">Máquina</p><p class="who">'+esc(S.m.name)+'</p>'
+        +'<button class="b ble" style="height: 100px; font-size: 1.3rem" onclick="iniciarAbastecimento()">LIBERAR BOMBA (LIGAR)</button>'
+        +'<button class="b" onclick="reset()">Cancelar</button></section>';
+    } else {
+        h+='<section class="g c"><p class="m">Bomba Liberada para:</p><p class="who">'+esc(S.m.name)+'</p><p class="m">Produto: '+esc(prod())+'</p><div class="tm" id="tm">00:00</div>'
+        +'<button class="b r" style="height: 100px; font-size: 1.3rem" onclick="finalizarAbastecimento()">CORTAR BOMBA (FINALIZAR)</button></section>';
+    }
   }else{
     h+='<section class="g"><h1>Registrar abastecimento</h1><p class="m">'+esc(S.w.name)+' na máquina '+esc(S.m.name)+'</p>'
       +'<label>Litros abastecidos<input id="lt" type="number" inputmode="decimal" step="0.01" min="0" placeholder="0,00"></label>'
       +'<label>Foto do visor de dosagem (obrigatória)<input id="ph" type="file" accept="image/*" capture="environment" onchange="photo(this)"></label>'
       +'<img id="pv" alt="Foto do visor" '+(S.photo?'src="'+S.photo+'"':'hidden')+'>'
       +'<label>Observação (opcional)<input id="ob" type="text"></label>'
-      +'<button class="b p" onclick="save()">Salvar</button><button class="b" onclick="S.step=2;render()">Voltar</button></section>';
+      +'<button class="b p" onclick="save()">Salvar Abastecimento</button><button class="b" onclick="S.step=2;render()">Voltar</button></section>';
   }
   $('#main').innerHTML=h;
 }
@@ -196,7 +306,7 @@ function instalar(){if(dp){dp.prompt();dp=null;cfg()}}
 async function enviar(){toast('Enviando...');try{await sync();toast('Enviado ao banco do GitHub.')}catch(e){toast('Falha no envio: '+e.message,1)}cfg()}
 async function saveGh(){
   GH.set({repo:$('#gr').value.trim(),branch:$('#gb').value.trim()||'main',token:$('#gt').value.trim()});
-  try{const priv=await GH.test();toast(priv?'Conectado ao repositório privado.':'Conectado, mas o repositório é público: os dados ficam visíveis a todos.',!priv)}
+  try{const priv=await GH.test();toast(priv?'Conectado ao repositório privado.':'Conectado, mas o repositório é público.',!priv)}
   catch(e){toast('Falha: '+e.message,1)}
 }
 function togCsv(){localStorage.setItem('csv',localStorage.getItem('csv')==='0'?'1':'0');cfg()}
@@ -208,23 +318,15 @@ async function cfg(){
   const c=GH.cfg(),n=(await all()).filter(r=>!r.sincronizado).length;
   let cad='';
   for(const k of ['w','m'])for(const i in reg[k])cad+='<li><div><b>'+esc(reg[k][i])+'</b><span class="m">'+(k==='w'?'Crachá':'Totem')+' '+esc(i)+'</span></div><button class="x" data-i="'+esc(i)+'" onclick="delReg(\''+k+'\',this.dataset.i)">Remover</button></li>';
-  $('#main').innerHTML='<section class="g"><h1>Ajustes</h1><p class="m">'+(n?n+' abastecimento(s) aguardando envio ao GitHub.':'Tudo enviado ao banco do GitHub.')+'</p>'
+  $('#main').innerHTML='<section class="g"><h1>Ajustes</h1><p class="m">'+(n?n+' abastecimento(s) aguardando envio.':'Tudo enviado ao banco do GitHub.')+'</p>'
     +(n?'<button class="b p" onclick="enviar()">Enviar pendentes agora</button>':'')
-    +(dp?'<button class="b" onclick="instalar()">Instalar como app</button>':'<p class="m">Para instalar como app: menu do Chrome, Instalar app.</p>')+'<button class="b" onclick="sair()">Sair dos ajustes</button></section>'
-    +'<section class="g"><h2>Banco no GitHub</h2><label>Repositório dos dados (usuario/nome)<input id="gr" value="'+esc(c.repo||'')+'" placeholder="usuario/lubrificacao-dados" autocapitalize="off"></label><label>Branch<input id="gb" value="'+esc(c.branch||'main')+'"></label><label>Token de acesso<input id="gt" type="password" value="'+esc(c.token||'')+'" autocomplete="off"></label><button class="b" onclick="saveGh()">Salvar e testar conexão</button></section>'
-    +'<section class="g"><h2>Arquivos na pasta Downloads</h2><button class="b" onclick="togCsv()">CSV da hora ao salvar: '+(localStorage.getItem('csv')==='0'?'desligado':'ligado')+'</button></section>'
-    +'<section class="g"><h2>Cadastros</h2><p class="m">'+Object.keys(reg.w).length+' pessoas e '+Object.keys(reg.m).length+' máquinas, vindas do banco. Quem administra altera tudo na página de administração.</p><button class="b" onclick="atualizarCad()">Atualizar cadastros</button><button class="b d" onclick="limparLocal()">Limpar cadastros deste tablet</button><button class="b" onclick="location.href=\'admin.html\'">Administração</button></section>';
+    +(dp?'<button class="b" onclick="instalar()">Instalar como app</button>':'')+'<button class="b" onclick="sair()">Sair dos ajustes</button></section>'
+    +'<section class="g"><h2>Banco no GitHub</h2><label>Repositório dos dados<input id="gr" value="'+esc(c.repo||'')+'"></label><label>Branch<input id="gb" value="'+esc(c.branch||'main')+'"></label><label>Token de acesso<input id="gt" type="password" value="'+esc(c.token||'')+'" autocomplete="off"></label><button class="b" onclick="saveGh()">Salvar e testar</button></section>'
+    +'<section class="g"><h2>Cadastros</h2><button class="b" onclick="atualizarCad()">Atualizar cadastros</button><button class="b d" onclick="limparLocal()">Limpar locais</button><button class="b" onclick="location.href=\'admin.html\'">Administração</button></section>';
 }
-function login(){
-  if($('#lu').value===GH.AUTH.u&&$('#lp').value===GH.AUTH.p){sessionStorage.setItem('auth','1');cfg()}
-  else toast('Usuário ou senha incorretos.',1);
-}
+function login(){if($('#lu').value===GH.AUTH.u&&$('#lp').value===GH.AUTH.p){sessionStorage.setItem('auth','1');cfg()}else toast('Incorreto.',1);}
 function sair(){sessionStorage.removeItem('auth');cfg()}
-async function limparLocal(){
-  if(!confirm('Apagar as pessoas e máquinas guardadas neste tablet e baixar de novo do banco? Precisa de internet.'))return;
-  reg.w={};reg.m={};saveReg();
-  await atualizarCad(1);toast('Cadastros do tablet refeitos a partir do banco.');cfg();
-}
+async function limparLocal(){if(!confirm('Apagar pessoas e máquinas locais?'))return;reg.w={};reg.m={};saveReg();await atualizarCad(1);toast('Locais limpos.');cfg();}
 async function atualizarCad(quiet){
   if(!GH.ok())return;
   try{
@@ -234,7 +336,7 @@ async function atualizarCad(quiet){
     if(S.tab==='a'&&S.step<2)render();
     if(!quiet)toast('Cadastros atualizados.');
     if(S.tab==='c')cfg();
-  }catch(e){if(!quiet)toast('Não consegui atualizar: '+((e&&e.message)||e),1)}
+  }catch(e){if(!quiet)toast('Erro de atlz: '+((e&&e.message)||e),1)}
 }
 addEventListener('online',()=>atualizarCad(1));
 atualizarCad(1);
