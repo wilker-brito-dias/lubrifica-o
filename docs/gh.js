@@ -3,6 +3,7 @@ const CDN='https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/';
 const b64=u=>{let s='';for(let i=0;i<u.length;i+=0x8000)s+=String.fromCharCode.apply(null,u.subarray(i,i+0x8000));return btoa(s)};
 const GH={
   DB:'data/abastecimentos.db',
+  AUTH:{u:'12345678',p:'12345678'},
   SCHEMA:'CREATE TABLE IF NOT EXISTS abastecimentos(uid TEXT PRIMARY KEY,inicio TEXT,fim TEXT,duracao_s INTEGER,colaborador TEXT,cracha_id TEXT,maquina TEXT,totem_id TEXT,produto TEXT,litros REAL,obs TEXT,foto TEXT);CREATE TABLE IF NOT EXISTS pessoas(uid TEXT PRIMARY KEY,nome TEXT,nfc TEXT UNIQUE);CREATE TABLE IF NOT EXISTS maquinas(uid TEXT PRIMARY KEY,nome TEXT,nfc TEXT UNIQUE)',
   cfg(){try{return JSON.parse(localStorage.getItem('gh')||'{}')}catch(e){return{}}},
   set(c){localStorage.setItem('gh',JSON.stringify(c))},
