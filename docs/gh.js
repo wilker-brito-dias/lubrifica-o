@@ -4,7 +4,7 @@ const b64=u=>{let s='';for(let i=0;i<u.length;i+=0x8000)s+=String.fromCharCode.a
 const GH={
   DB:'data/abastecimentos.db',
   AUTH:{u:'12345678',p:'12345678'},
-  SCHEMA:'CREATE TABLE IF NOT EXISTS abastecimentos(uid TEXT PRIMARY KEY,inicio TEXT,fim TEXT,duracao_s INTEGER,colaborador TEXT,cracha_id TEXT,maquina TEXT,totem_id TEXT,produto TEXT,litros REAL,obs TEXT,foto TEXT);CREATE TABLE IF NOT EXISTS pessoas(uid TEXT PRIMARY KEY,nome TEXT,nfc TEXT UNIQUE);CREATE TABLE IF NOT EXISTS maquinas(uid TEXT PRIMARY KEY,nome TEXT,nfc TEXT UNIQUE)',
+  SCHEMA:'CREATE TABLE IF NOT EXISTS abastecimentos(uid TEXT PRIMARY KEY,inicio TEXT,fim TEXT,duracao_s INTEGER,colaborador TEXT,cracha_id TEXT,maquina TEXT,totem_id TEXT,produto TEXT,litros REAL,obs TEXT,foto TEXT,oleo TEXT,preco REAL);CREATE TABLE IF NOT EXISTS oleos(uid TEXT PRIMARY KEY,nome TEXT,viscosidade TEXT,codigo TEXT,preco REAL,fornecedor TEXT,bombona REAL,obs TEXT,ativo INTEGER);CREATE TABLE IF NOT EXISTS pessoas(uid TEXT PRIMARY KEY,nome TEXT,nfc TEXT UNIQUE);CREATE TABLE IF NOT EXISTS maquinas(uid TEXT PRIMARY KEY,nome TEXT,nfc TEXT UNIQUE)',
   cfg(){try{return JSON.parse(localStorage.getItem('gh')||'{}')}catch(e){return{}}},
   set(c){localStorage.setItem('gh',JSON.stringify(c))},
   ok(){const c=this.cfg();return !!(c.repo&&c.token)},
@@ -33,18 +33,22 @@ const GH={
   put(path,b64s,msg,sha){
     return fetch(this.u(path),{method:'PUT',headers:this.h(),body:JSON.stringify({message:msg,content:b64s,sha:sha||undefined,branch:this.cfg().branch||undefined})});
   },
+  prep(d){
+    d.run(this.SCHEMA);
+    for(const c of ['oleo TEXT','preco REAL']){try{d.run('ALTER TABLE abastecimentos ADD COLUMN '+c)}catch(e){}}
+  },
   async cad(){
     const cur=await this.read();if(!cur)return null;
-    const S=await this.sql(),d=new S.Database(cur.bytes);d.run(this.SCHEMA);
+    const S=await this.sql(),d=new S.Database(cur.bytes);this.prep(d);
     const q=t=>{const st=d.prepare('SELECT * FROM '+t+' ORDER BY nome'),o=[];while(st.step())o.push(st.getAsObject());st.free();return o};
-    const r={pessoas:q('pessoas'),maquinas:q('maquinas')};d.close();return r;
+    const r={pessoas:q('pessoas'),maquinas:q('maquinas'),oleos:q('oleos')};d.close();return r;
   },
   async edit(fn,msg){
     try{
       const S=await this.sql();
       for(let t=0;t<4;t++){
         const cur=await this.read(),d=cur&&cur.bytes.length?new S.Database(cur.bytes):new S.Database();
-        d.run(this.SCHEMA);await fn(d);
+        this.prep(d);await fn(d);
         const out=d.export();d.close();
         const x=await this.put(this.DB,b64(out),msg,cur&&cur.sha);
         if(x.ok)return;
@@ -74,8 +78,8 @@ const GH={
     for(let t=0;t<4;t++){
       const cur=await this.read();
       const d=cur&&cur.bytes.length?new S.Database(cur.bytes):new S.Database();
-      d.run(this.SCHEMA);
-      for(const r of rows)d.run('INSERT OR IGNORE INTO abastecimentos VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',[r.uid,r.inicio,r.fim,r.duracao_s,r.colaborador,r.cracha_id,r.maquina,r.totem_id,r.produto,r.litros,r.obs,r.foto?'fotos/'+r.uid+'.jpg':''].map(v=>v===undefined?null:v));
+      this.prep(d);
+      for(const r of rows)d.run('INSERT OR IGNORE INTO abastecimentos(uid,inicio,fim,duracao_s,colaborador,cracha_id,maquina,totem_id,produto,litros,obs,foto,oleo,preco) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',[r.uid,r.inicio,r.fim,r.duracao_s,r.colaborador,r.cracha_id,r.maquina,r.totem_id,r.produto,r.litros,r.obs,r.foto?'fotos/'+r.uid+'.jpg':'',r.oleo,r.preco].map(v=>v===undefined?null:v));
       const out=d.export();d.close();
       const x=await this.put(this.DB,b64(out),'abastecimentos: +'+rows.length,cur&&cur.sha);
       if(x.ok){for(const r of rows){r.sincronizado=true;await save(r)}return}
