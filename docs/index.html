@@ -117,6 +117,15 @@ function tag(id){
   S.step++;render();if(navigator.vibrate)navigator.vibrate(120);
 }
 function manual(){const id=prompt(S.step===0?'Código do crachá:':'Código do totem da máquina:');if(id)tag(id.trim())}
+const oleo=()=>{try{return JSON.parse(localStorage.getItem('oleo')||'null')}catch(e){return null}};
+const prod=()=>{const o=oleo();return o&&o.nome?o.nome+(o.viscosidade?' '+o.viscosidade:''):'HF28'};
+function oleoCard(){
+  const o=oleo();if(!o)return'';
+  return'<section class="g"><h2>Óleo em uso</h2><p><b>'+esc(o.nome)+'</b> '+esc(o.viscosidade||'')+'</p>'
+    +(o.codigo?'<p class="m">Código de requisição: '+esc(o.codigo)+'</p>':'')
+    +(o.preco!=null?'<p class="m">Preço: '+Number(o.preco).toLocaleString('pt-BR',{style:'currency',currency:'BRL'})+' por litro</p>':'')
+    +(o.fornecedor?'<p class="m">Fornecedor: '+esc(o.fornecedor)+'</p>':'')+'</section>';
+}
 function stopNFC(){
   if(S.ctl)S.ctl.abort();
   S.nfc=false;
@@ -146,7 +155,7 @@ async function save(){
   if(!(l>0)){toast('Informe os litros abastecidos.',1);return}
   if(!S.photo){toast('Tire a foto do visor de dosagem. Ela é obrigatória para salvar.',1);return}
   const fim=new Date();
-  const r={uid:crypto.randomUUID(),inicio:S.t0.toISOString(),fim:fim.toISOString(),hora:hk(fim),duracao_s:Math.round((fim-S.t0)/1000),colaborador:S.w.name,cracha_id:S.w.id,maquina:S.m.name,totem_id:S.m.id,produto:'HF28',litros:l,obs:$('#ob').value.trim(),foto:S.photo,sincronizado:false};
+  const r={uid:crypto.randomUUID(),inicio:S.t0.toISOString(),fim:fim.toISOString(),hora:hk(fim),duracao_s:Math.round((fim-S.t0)/1000),colaborador:S.w.name,cracha_id:S.w.id,maquina:S.m.name,totem_id:S.m.id,produto:prod(),oleo:(oleo()||{}).nome||'HF28',preco:oleo()&&oleo().preco!=null?oleo().preco:null,litros:l,obs:$('#ob').value.trim(),foto:S.photo,sincronizado:false};
   try{r.id=await put(r)}catch(e){toast('Erro ao gravar no banco: '+e.message,1);return}
   if(localStorage.getItem('csv')!=='0')await exportHour(r.hora,r);
   reset();toast('Salvando no banco do GitHub...');
@@ -167,9 +176,9 @@ function render(){
       +'<p class="m">'+(S.nfc?'Leitura ativa. Encoste na parte de trás do tablet.':'Toque em ativar para liberar a leitura NFC.')+'</p>'
       +(S.w&&!w?'<p class="who">'+esc(S.w.name)+'</p>':'')
       +(S.nfc?'<button class="b" onclick="stopNFC()">Parar leitura NFC</button>':'<button class="b p" onclick="startNFC()">Ativar leitura NFC</button>')
-      +'<button class="b" onclick="manual()">Digitar código</button></section>';
+      +'<button class="b" onclick="manual()">Digitar código</button></section>'+oleoCard();
   }else if(S.step===2){
-    h+='<section class="g c"><p class="m">Colaborador</p><p class="who">'+esc(S.w.name)+'</p><p class="m">Máquina</p><p class="who">'+esc(S.m.name)+'</p><p class="m">Produto: HF28</p><div class="tm" id="tm">00:00</div>'
+    h+='<section class="g c"><p class="m">Colaborador</p><p class="who">'+esc(S.w.name)+'</p><p class="m">Máquina</p><p class="who">'+esc(S.m.name)+'</p><p class="m">Produto: '+esc(prod())+'</p><div class="tm" id="tm">00:00</div>'
       +'<button class="b p" onclick="S.step=3;render()">Finalizar abastecimento</button><button class="b" onclick="reset()">Cancelar</button></section>';
   }else{
     h+='<section class="g"><h1>Registrar abastecimento</h1><p class="m">'+esc(S.w.name)+' na máquina '+esc(S.m.name)+'</p>'
@@ -221,6 +230,8 @@ async function atualizarCad(quiet){
   try{
     const c=await GH.cad();
     if(c&&(c.pessoas.length||c.maquinas.length)){reg.w={};reg.m={};c.pessoas.forEach(p=>reg.w[p.nfc]=p.nome);c.maquinas.forEach(m=>reg.m[m.nfc]=m.nome);saveReg()}
+    if(c&&c.oleos&&c.oleos.length)localStorage.setItem('oleo',JSON.stringify(c.oleos.find(x=>x.ativo)||c.oleos[0]));
+    if(S.tab==='a'&&S.step<2)render();
     if(!quiet)toast('Cadastros atualizados.');
     if(S.tab==='c')cfg();
   }catch(e){if(!quiet)toast('Não consegui atualizar: '+((e&&e.message)||e),1)}
