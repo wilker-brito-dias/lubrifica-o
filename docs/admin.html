@@ -51,17 +51,9 @@ function toast(t,bad){const e=$('#toast');e.textContent=t;e.className='show'+(ba
 let TAB='r',F='',ROWS=[],CAD={pessoas:[],maquinas:[]};
 const qry=(d,q)=>{const st=d.prepare(q),o=[];while(st.step())o.push(st.getAsObject());st.free();return o};
 
-/* PIN de administrador (trava simples neste aparelho) */
-const sha=async t=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(t)))].map(x=>x.toString(16).padStart(2,'0')).join('');
+/* Acesso: usa o login feito em Ajustes */
 function lock(){
-  if(!GH.ok()){box('<h1>Administração</h1><p class="m">Configure o GitHub em Ajustes do app primeiro.</p><button class="b p" onclick="location.href=\'index.html#ajustes\'">Abrir ajustes</button>');return}
-  box('<h1>Administração</h1><label>'+(localStorage.getItem('pin')?'PIN de administrador':'Crie um PIN de 4 a 8 dígitos')+'<input id="pin" type="password" inputmode="numeric" autocomplete="off"></label><button class="b p" onclick="unlock()">Entrar</button>');
-}
-async function unlock(){
-  const p=$('#pin').value,h=localStorage.getItem('pin');
-  if(p.length<4){toast('Use pelo menos 4 dígitos.',1);return}
-  const x=await sha(p);
-  if(!h)localStorage.setItem('pin',x);else if(x!==h){toast('PIN incorreto.',1);return}
+  if(sessionStorage.getItem('auth')!=='1'||!GH.ok()){location.replace('index.html#ajustes');return}
   load();
 }
 
