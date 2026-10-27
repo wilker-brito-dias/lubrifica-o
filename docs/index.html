@@ -117,10 +117,16 @@ function tag(id){
   S.step++;render();if(navigator.vibrate)navigator.vibrate(120);
 }
 function manual(){const id=prompt(S.step===0?'Código do crachá:':'Código do totem da máquina:');if(id)tag(id.trim())}
+function stopNFC(){
+  if(S.ctl)S.ctl.abort();
+  S.nfc=false;
+  if(S.step<2){S.step=0;S.w=S.m=null}
+  render();toast('Leitura NFC parada.');
+}
 async function startNFC(){
   if(!('NDEFReader' in window)){toast('Este navegador não tem NFC web. Use o Chrome no Android com a página em HTTPS, ou digite o código.',1);return}
   try{
-    const r=new NDEFReader();await r.scan();
+    const r=new NDEFReader();S.ctl=new AbortController();await r.scan({signal:S.ctl.signal});
     r.onreading=e=>{let id=e.serialNumber;for(const x of e.message.records)if(x.recordType==='text'){id=new TextDecoder(x.encoding||'utf-8').decode(x.data);break}tag(id)};
     r.onreadingerror=()=>toast('Não consegui ler a tag. Tente de novo ou digite o código.',1);
     S.nfc=true;render();
@@ -138,6 +144,7 @@ function photo(i){
 async function save(){
   const l=parseFloat(($('#lt').value||'').replace(',','.'));
   if(!(l>0)){toast('Informe os litros abastecidos.',1);return}
+  if(!S.photo){toast('Tire a foto do visor de dosagem. Ela é obrigatória para salvar.',1);return}
   const fim=new Date();
   const r={uid:crypto.randomUUID(),inicio:S.t0.toISOString(),fim:fim.toISOString(),hora:hk(fim),duracao_s:Math.round((fim-S.t0)/1000),colaborador:S.w.name,cracha_id:S.w.id,maquina:S.m.name,totem_id:S.m.id,produto:'HF28',litros:l,obs:$('#ob').value.trim(),foto:S.photo,sincronizado:false};
   try{r.id=await put(r)}catch(e){toast('Erro ao gravar no banco: '+e.message,1);return}
@@ -159,7 +166,7 @@ function render(){
     h+='<section class="g c"><div class="ring '+(S.nfc?'on':'')+'"><b>NFC</b></div><h1>'+(w?'Aproxime o seu crachá':'Aproxime o totem da máquina')+'</h1>'
       +'<p class="m">'+(S.nfc?'Leitura ativa. Encoste na parte de trás do tablet.':'Toque em ativar para liberar a leitura NFC.')+'</p>'
       +(S.w&&!w?'<p class="who">'+esc(S.w.name)+'</p>':'')
-      +(S.nfc?'':'<button class="b p" onclick="startNFC()">Ativar leitura NFC</button>')
+      +(S.nfc?'<button class="b" onclick="stopNFC()">Parar leitura NFC</button>':'<button class="b p" onclick="startNFC()">Ativar leitura NFC</button>')
       +'<button class="b" onclick="manual()">Digitar código</button></section>';
   }else if(S.step===2){
     h+='<section class="g c"><p class="m">Colaborador</p><p class="who">'+esc(S.w.name)+'</p><p class="m">Máquina</p><p class="who">'+esc(S.m.name)+'</p><p class="m">Produto: HF28</p><div class="tm" id="tm">00:00</div>'
@@ -167,7 +174,7 @@ function render(){
   }else{
     h+='<section class="g"><h1>Registrar abastecimento</h1><p class="m">'+esc(S.w.name)+' na máquina '+esc(S.m.name)+'</p>'
       +'<label>Litros abastecidos<input id="lt" type="number" inputmode="decimal" step="0.01" min="0" placeholder="0,00"></label>'
-      +'<label>Foto do visor de dosagem<input id="ph" type="file" accept="image/*" capture="environment" onchange="photo(this)"></label>'
+      +'<label>Foto do visor de dosagem (obrigatória)<input id="ph" type="file" accept="image/*" capture="environment" onchange="photo(this)"></label>'
       +'<img id="pv" alt="Foto do visor" '+(S.photo?'src="'+S.photo+'"':'hidden')+'>'
       +'<label>Observação (opcional)<input id="ob" type="text"></label>'
       +'<button class="b p" onclick="save()">Salvar</button><button class="b" onclick="S.step=2;render()">Voltar</button></section>';
