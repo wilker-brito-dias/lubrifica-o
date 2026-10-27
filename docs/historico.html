@@ -23,7 +23,7 @@ p{margin:.3em 0}
 .b:focus-visible,select:focus-visible,#nav button:focus-visible{outline:3px solid #7cc4ff;outline-offset:2px}
 .row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .kpi{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
-.kpi b{display:block;font-size:1.8rem;font-variant-numeric:tabular-nums}
+.kpi b{display:block;font-size:1.3rem;font-variant-numeric:tabular-nums}
 select{width:100%;margin-top:6px;padding:14px;font:inherit;color:var(--ink);background:rgba(0,0,0,.3);border:1px solid var(--line);border-radius:14px}
 label{display:block;color:var(--mut);font-size:.95rem}
 .ls{list-style:none;margin:14px 0 0;padding:0}
@@ -50,6 +50,9 @@ label{display:block;color:var(--mut);font-size:.95rem}
 .lg div{flex:1}
 .lg span{display:block}
 .bx{height:16px;border-radius:6px;margin-top:6px}
+.mes{flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:4px;height:100%;font-size:.75rem;color:var(--mut);text-align:center}
+.mes i{display:block;width:100%;background:#4cc9f0;border-radius:4px 4px 0 0}
+.cht.mm{height:200px}
 .ax{display:flex;justify-content:space-between;gap:8px;margin-top:6px;font-size:.85rem;color:var(--mut)}
 input{display:block;width:100%;margin-top:6px;padding:14px;font:inherit;color:var(--ink);background:rgba(0,0,0,.3);border:1px solid var(--line);border-radius:14px}
 .rk{display:block;padding:10px 0;border-top:1px solid var(--line)}
@@ -72,7 +75,7 @@ input{display:block;width:100%;margin-top:6px;padding:14px;font:inherit;color:va
 const $=s=>document.querySelector(s);
 const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt=n=>Number(n||0).toLocaleString('pt-BR',{maximumFractionDigits:1});
-let ROWS=[],RANK=[],DB=null,F='';
+let ROWS=[],RANK=[],OLEOS=[],OLEO=null,DB=null,F='';
 const qry=(d,q)=>{const st=d.prepare(q),o=[];while(st.step())o.push(st.getAsObject());st.free();return o};
 const box=h=>$('#main').innerHTML='<section class="g">'+h+'</section>';
 
@@ -82,9 +85,10 @@ async function load(){
   try{
     const cur=await GH.read();
     if(!cur){box('<h1>Histórico</h1><p class="m">Nenhum abastecimento no banco ainda.</p><button class="b" onclick="load()">Atualizar</button>');return}
-    const S=await GH.sql(),d=new S.Database(cur.bytes);DB=cur.bytes;
+    const S=await GH.sql(),d=new S.Database(cur.bytes);DB=cur.bytes;GH.prep(d);
     ROWS=qry(d,'SELECT * FROM abastecimentos ORDER BY fim DESC');
     RANK=qry(d,'SELECT maquina,COUNT(*) n,SUM(litros) total,AVG(litros) media FROM abastecimentos GROUP BY maquina ORDER BY total DESC');
+    OLEOS=qry(d,'SELECT * FROM oleos');OLEO=OLEOS.find(o=>o.ativo)||OLEOS[0]||null;
     d.close();draw();
   }catch(e){box('<h1>Histórico</h1><p class="warn">Não foi possível ler o banco: '+esc((e&&e.message)||e)+'</p><button class="b" onclick="load()">Tentar de novo</button>')}
 }
@@ -107,48 +111,74 @@ function analise(){
   al.sort((a,b)=>b.crit-a.crit);res.sort((a,b)=>b.sw-a.sw);
   return{res,al};
 }
+const p2=n=>String(n).padStart(2,'0');
+const brl=n=>Number(n||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
+const brl0=n=>Number(n||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL',maximumFractionDigits:0});
+let MED='l';
+const PRECO=()=>OLEO&&OLEO.preco!=null?OLEO.preco:0;
+const custo=r=>r.litros*(r.preco!=null?r.preco:PRECO());
+const val=r=>MED==='r'?custo(r):r.litros;
+const uf=n=>MED==='r'?brl(n):fmt(n)+' L';
+const medSeg=()=>'<div class="seg"><button class="'+(MED==='l'?'on':'')+'" onclick="MED=\'l\';draw()">Litros</button><button class="'+(MED==='r'?'on':'')+'" onclick="MED=\'r\';draw()">Reais (R$)</button></div>';
+function oleoSec(){
+  if(!OLEO)return'<section class="g"><h2>Óleo em uso</h2><p class="m">Nenhum óleo cadastrado. Cadastre na Administração para calcular os gastos.</p></section>';
+  const o=OLEO,L=ROWS.reduce((s,r)=>s+r.litros,0);
+  return'<section class="g"><h2>Óleo em uso</h2><p><b>'+esc(o.nome)+'</b> '+esc(o.viscosidade||'')+'</p><p class="m">'
+    +(o.codigo?'Requisição: '+esc(o.codigo)+'. ':'')+(o.preco!=null?'Preço: '+brl(o.preco)+' por litro. ':'Preço não informado. ')+(o.fornecedor?'Fornecedor: '+esc(o.fornecedor)+'.':'')+'</p>'
+    +(o.bombona>0?'<p class="m">Já consumido: '+fmt(L)+' L, cerca de '+fmt(L/o.bombona)+' bombonas de '+fmt(o.bombona)+' L.</p>':'')+(o.obs?'<p class="m">'+esc(o.obs)+'</p>':'')+'</section>';
+}
+function gastoMes(){
+  const ms=[];
+  for(let i=5;i>=0;i--){const d=new Date();d.setDate(1);d.setMonth(d.getMonth()-i);ms.push({k:d.getFullYear()+'-'+p2(d.getMonth()+1),t:d.toLocaleDateString('pt-BR',{month:'short'}).replace('.',''),c:0})}
+  ROWS.forEach(r=>{const d=new Date(r.fim),x=ms.find(y=>y.k===d.getFullYear()+'-'+p2(d.getMonth()+1));if(x)x.c+=custo(r)});
+  const mx=Math.max(...ms.map(x=>x.c),1),tot=ms.reduce((s,x)=>s+x.c,0);
+  return'<section class="g"><h2>Gasto por mês, últimos 6 meses</h2><p class="m">Total no período: '+brl(tot)+', média de '+brl(tot/6)+' por mês.</p><div class="cht mm" role="img" aria-label="Gasto em reais por mês">'
+    +ms.map(x=>'<span class="mes"><small>'+brl0(x.c)+'</small><i style="height:'+Math.max(x.c/mx*70,1)+'%"></i>'+esc(x.t)+'</span>').join('')+'</div></section>';
+}
 let CH={tipo:'pizza',por:'maquina',dias:30};
 const COR=['#f5a524','#4cc9f0','#3ddc97','#ff6b6b','#b48cff','#ffd166','#f78fb3','#7ca5ff','#c3e88d'];
 function dist(){
   const lim=CH.dias?Date.now()-CH.dias*DIA:0,g={};
-  ROWS.filter(r=>!lim||new Date(r.fim).getTime()>=lim).forEach(r=>{const k=r[CH.por]||'(sem nome)',x=g[k]=g[k]||{k,l:0,n:0};x.l+=r.litros;x.n++});
+  ROWS.filter(r=>!lim||new Date(r.fim).getTime()>=lim).forEach(r=>{const k=r[CH.por]||'(sem nome)',x=g[k]=g[k]||{k,l:0,n:0};x.l+=val(r);x.n++});
   let a=Object.values(g).sort((x,y)=>y.l-x.l);
   if(a.length>9){const o=a.slice(8);a=a.slice(0,8).concat({k:'Outras ('+o.length+')',l:o.reduce((s,x)=>s+x.l,0),n:o.reduce((s,x)=>s+x.n,0)})}
   const tot=a.reduce((s,x)=>s+x.l,0);
   a.forEach((x,i)=>{x.c=COR[i%COR.length];x.p=tot?x.l/tot*100:0});
   const op=(v,t,c)=>'<option value="'+v+'"'+(String(c)===String(v)?' selected':'')+'>'+t+'</option>';
-  let h='<section class="g"><h2>Distribuição do consumo</h2><div class="seg"><button class="'+(CH.tipo==='pizza'?'on':'')+'" onclick="CH.tipo=\'pizza\';draw()">Pizza</button><button class="'+(CH.tipo==='barras'?'on':'')+'" onclick="CH.tipo=\'barras\';draw()">Barras</button></div>'
+  let h='<section class="g"><h2>Distribuição do consumo</h2>'+medSeg()+'<div class="seg"><button class="'+(CH.tipo==='pizza'?'on':'')+'" onclick="CH.tipo=\'pizza\';draw()">Pizza</button><button class="'+(CH.tipo==='barras'?'on':'')+'" onclick="CH.tipo=\'barras\';draw()">Barras</button></div>'
     +'<div class="r2"><label>Agrupar por<select onchange="CH.por=this.value;draw()">'+op('maquina','Máquina',CH.por)+op('colaborador','Colaborador',CH.por)+'</select></label>'
     +'<label>Período<select onchange="CH.dias=+this.value;draw()">'+op(7,'7 dias',CH.dias)+op(30,'30 dias',CH.dias)+op(90,'90 dias',CH.dias)+op(0,'Tudo',CH.dias)+'</select></label></div>';
   if(!tot)return h+'<p class="m">Sem abastecimentos neste período.</p></section>';
   if(CH.tipo==='pizza'){
     let off=25,sl='';
     a.forEach(x=>{sl+='<circle cx="21" cy="21" r="15.9155" fill="none" stroke="'+x.c+'" stroke-width="7" stroke-dasharray="'+x.p+' '+(100-x.p)+'" stroke-dashoffset="'+off+'"></circle>';off-=x.p});
-    h+='<svg class="pie" viewBox="0 0 42 42" role="img" aria-label="Gráfico de pizza do consumo em litros"><circle cx="21" cy="21" r="15.9155" fill="none" stroke="rgba(255,255,255,.08)" stroke-width="7"></circle>'+sl+'<text x="21" y="22.4" text-anchor="middle" font-size="4.4" font-weight="700" fill="#e8eef5">'+fmt(tot)+' L</text></svg>';
+    h+='<svg class="pie" viewBox="0 0 42 42" role="img" aria-label="Gráfico de pizza do consumo em litros"><circle cx="21" cy="21" r="15.9155" fill="none" stroke="rgba(255,255,255,.08)" stroke-width="7"></circle>'+sl+'<text x="21" y="22.4" text-anchor="middle" font-size="'+(MED==='r'?3.2:4.4)+'" font-weight="700" fill="#e8eef5">'+(MED==='r'?brl(tot):fmt(tot)+' L')+'</text></svg>';
   }
   const mx=a[0].l;
-  return h+'<ul class="lg">'+a.map(x=>'<li><i style="background:'+x.c+'"></i><div><b>'+esc(x.k)+'</b><span class="m">'+fmt(x.l)+' L, '+x.p.toFixed(1).replace('.',',')+'% do total</span><span class="m">'+x.n+' abastecimentos, média de '+fmt(x.l/x.n)+' L</span>'+(CH.tipo==='barras'?'<div class="bx" style="width:'+Math.max(2,x.l/mx*100)+'%;background:'+x.c+'"></div>':'')+'</div></li>').join('')+'</ul></section>';
+  return h+'<ul class="lg">'+a.map(x=>'<li><i style="background:'+x.c+'"></i><div><b>'+esc(x.k)+'</b><span class="m">'+uf(x.l)+', '+x.p.toFixed(1).replace('.',',')+'% do total</span><span class="m">'+x.n+' abastecimentos, média de '+uf(x.l/x.n)+'</span>'+(CH.tipo==='barras'?'<div class="bx" style="width:'+Math.max(2,x.l/mx*100)+'%;background:'+x.c+'"></div>':'')+'</div></li>').join('')+'</ul></section>';
 }
 function draw(){
   const rows=F?ROWS.filter(r=>r.maquina===F):ROWS,hoje=new Date().toDateString();
   const tot=rows.reduce((s,r)=>s+r.litros,0),th=rows.filter(r=>new Date(r.fim).toDateString()===hoje).reduce((s,r)=>s+r.litros,0);
+  const ct=f=>rows.filter(f).reduce((s,r)=>s+custo(r),0),gt=ct(()=>1),ghj=ct(r=>new Date(r.fim).toDateString()===hoje),g30=ct(r=>Date.now()-new Date(r.fim).getTime()<30*DIA);
   const{res,al}=analise(),base=res.some(r=>r.ex!=null),sd=d=>d.toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'});
   const dias=[];for(let i=29;i>=0;i--){const d=new Date(Date.now()-i*DIA);dias.push({d,k:d.toLocaleDateString('pt-BR'),v:0})}
-  rows.forEach(r=>{const x=dias.find(y=>y.k===new Date(r.fim).toLocaleDateString('pt-BR'));if(x)x.v+=r.litros});
+  rows.forEach(r=>{const x=dias.find(y=>y.k===new Date(r.fim).toLocaleDateString('pt-BR'));if(x)x.v+=val(r)});
   const mx=Math.max(...dias.map(x=>x.v),1),pk=dias.reduce((a,b)=>b.v>a.v?b:a),mx2=Math.max(...res.map(r=>Math.max(r.sw,r.sb)),1);
   $('#main').innerHTML=
-   '<section class="g"><h1>Histórico</h1><div class="kpi"><p class="m"><b>'+rows.length+'</b>abastecimentos</p><p class="m"><b>'+fmt(tot)+'</b>litros no total</p><p class="m"><b>'+fmt(th)+'</b>litros hoje</p></div>'
+   '<section class="g"><h1>Histórico</h1><div class="kpi"><p class="m"><b>'+rows.length+'</b>abastecimentos</p><p class="m"><b>'+fmt(tot)+'</b>litros no total</p><p class="m"><b>'+brl(gt)+'</b>gasto total</p><p class="m"><b>'+fmt(th)+'</b>litros hoje</p><p class="m"><b>'+brl(ghj)+'</b>gasto hoje</p><p class="m"><b>'+brl(g30)+'</b>gasto em 30 dias</p></div>'
    +'<div class="row"><button class="b" onclick="load()">Atualizar</button><button class="b" onclick="baixar()">Baixar banco (.db)</button></div></section>'
+   +oleoSec()
    +'<section class="g"><h2>Alertas de consumo</h2>'
    +(al.length?al.map(a=>'<p class="al'+(a.crit?' crit':'')+'"><b>'+esc(a.m)+'</b> ('+(a.crit?'crítico':'atenção')+')<br>'+a.txt+'</p>').join(''):base?'<p class="ok">Nenhuma máquina com consumo acima do limite.</p>':'<p class="m">Ainda não há histórico de mais de 7 dias para comparar o consumo.</p>')
    +'<label>Limite de alerta (% acima da média semanal)<input type="number" inputmode="numeric" min="5" step="5" value="'+LIM()+'" onchange="localStorage.setItem(\'lim\',this.value||30);draw()"></label></section>'
-   +'<section class="g"><h2>Consumo diário, últimos 30 dias</h2><label>Máquina<select onchange="F=this.value;draw()"><option value="">Todas</option>'+RANK.map(r=>'<option'+(r.maquina===F?' selected':'')+'>'+esc(r.maquina)+'</option>').join('')+'</select></label>'
+   +'<section class="g"><h2>Consumo diário, últimos 30 dias</h2>'+medSeg()+'<label>Máquina<select onchange="F=this.value;draw()"><option value="">Todas</option>'+RANK.map(r=>'<option'+(r.maquina===F?' selected':'')+'>'+esc(r.maquina)+'</option>').join('')+'</select></label>'
    +'<div class="cht" role="img" aria-label="Litros abastecidos por dia nos últimos 30 dias">'+dias.map(x=>'<div'+(x.v?'':' class="z"')+' style="height:'+Math.max(x.v/mx*100,1.5)+'%"></div>').join('')+'</div>'
-   +'<div class="ax"><span>'+sd(dias[0].d)+'</span><span>pico: '+fmt(pk.v)+' L em '+sd(pk.d)+'</span><span>hoje</span></div></section>'
-   +dist()
+   +'<div class="ax"><span>'+sd(dias[0].d)+'</span><span>pico: '+uf(pk.v)+' em '+sd(pk.d)+'</span><span>hoje</span></div></section>'
+   +dist()+gastoMes()
    +'<section class="g"><h2>Esta semana contra a média</h2><p class="m">Barra grossa: últimos 7 dias. Barra fina: média semanal das 4 semanas anteriores. Vermelho: acima do limite.</p>'
    +(res.map(r=>'<span class="rk"><b>'+esc(r.m)+'</b><span class="m"> '+fmt(r.sw)+' L'+(r.sb?', média anterior '+fmt(r.sb)+' L':'')+'</span><div class="bar'+(r.alerta?' alert':'')+'" style="width:'+Math.max(2,r.sw/mx2*100)+'%"></div>'+(r.sb?'<div class="bar ref" style="width:'+Math.max(2,r.sb/mx2*100)+'%"></div>':'')+'</span>').join('')||'<p class="m">Sem dados.</p>')+'</section>'
-   +'<section class="g"><h2>Abastecimentos'+(F?' de '+esc(F):'')+'</h2><ul class="ls">'+rows.slice(0,100).map(r=>'<li><div><b>'+esc(r.maquina)+'</b><span class="m">'+esc(r.colaborador)+', '+new Date(r.fim).toLocaleString('pt-BR')+'</span>'+(r.obs?'<span class="m">'+esc(r.obs)+'</span>':'')+'</div><div class="lt">'+fmt(r.litros)+' L'+(r.foto?'<button class="x" data-p="'+esc(r.foto)+'" onclick="foto(this.dataset.p)">Ver foto</button>':'')+'</div></li>').join('')+'</ul></section>';
+   +'<section class="g"><h2>Abastecimentos'+(F?' de '+esc(F):'')+'</h2><ul class="ls">'+rows.slice(0,100).map(r=>'<li><div><b>'+esc(r.maquina)+'</b><span class="m">'+esc(r.colaborador)+', '+new Date(r.fim).toLocaleString('pt-BR')+'</span>'+(r.obs?'<span class="m">'+esc(r.obs)+'</span>':'')+'</div><div class="lt">'+fmt(r.litros)+' L<span class="m">'+brl(custo(r))+'</span>'+(r.foto?'<button class="x" data-p="'+esc(r.foto)+'" onclick="foto(this.dataset.p)">Ver foto</button>':'')+'</div></li>').join('')+'</ul></section>';
 }
 async function foto(p){
   try{const r=await fetch(GH.u(p,1),{headers:GH.h(1)});if(!r.ok)throw new Error('GitHub '+r.status);$('#ov img').src=URL.createObjectURL(await r.blob());$('#ov').hidden=false}
