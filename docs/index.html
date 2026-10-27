@@ -34,6 +34,7 @@ p{margin:.3em 0}
 .b{display:block;width:100%;min-height:58px;margin-top:12px;padding:14px 18px;font:inherit;font-weight:600;color:var(--ink);background:rgba(255,255,255,.08);border:1px solid var(--line);border-radius:16px;cursor:pointer}
 .b.p{background:var(--acc);border-color:var(--acc);color:#1b1200}
 .b:focus-visible,input:focus-visible,#nav button:focus-visible{outline:3px solid #7cc4ff;outline-offset:2px}
+.b.d{color:var(--bad);border-color:rgba(255,107,107,.5)}
 .row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 label{display:block;margin-top:16px;color:var(--mut);font-size:.95rem}
 input{display:block;width:100%;margin-top:6px;padding:14px;font:inherit;color:var(--ink);background:rgba(0,0,0,.3);border:1px solid var(--line);border-radius:14px}
@@ -184,15 +185,29 @@ async function saveGh(){
 }
 function togCsv(){localStorage.setItem('csv',localStorage.getItem('csv')==='0'?'1':'0');cfg()}
 async function cfg(){
+  if(sessionStorage.getItem('auth')!=='1'){
+    $('#main').innerHTML='<section class="g"><h1>Ajustes</h1><p class="m">Entre para alterar as configurações.</p><label>Usuário<input id="lu" autocomplete="off" autocapitalize="off"></label><label>Senha<input id="lp" type="password" autocomplete="off"></label><button class="b p" onclick="login()">Entrar</button></section>';
+    return;
+  }
   const c=GH.cfg(),n=(await all()).filter(r=>!r.sincronizado).length;
   let cad='';
   for(const k of ['w','m'])for(const i in reg[k])cad+='<li><div><b>'+esc(reg[k][i])+'</b><span class="m">'+(k==='w'?'Crachá':'Totem')+' '+esc(i)+'</span></div><button class="x" data-i="'+esc(i)+'" onclick="delReg(\''+k+'\',this.dataset.i)">Remover</button></li>';
   $('#main').innerHTML='<section class="g"><h1>Ajustes</h1><p class="m">'+(n?n+' abastecimento(s) aguardando envio ao GitHub.':'Tudo enviado ao banco do GitHub.')+'</p>'
     +(n?'<button class="b p" onclick="enviar()">Enviar pendentes agora</button>':'')
-    +(dp?'<button class="b" onclick="instalar()">Instalar como app</button>':'<p class="m">Para instalar como app: menu do Chrome, Instalar app.</p>')+'</section>'
+    +(dp?'<button class="b" onclick="instalar()">Instalar como app</button>':'<p class="m">Para instalar como app: menu do Chrome, Instalar app.</p>')+'<button class="b" onclick="sair()">Sair dos ajustes</button></section>'
     +'<section class="g"><h2>Banco no GitHub</h2><label>Repositório dos dados (usuario/nome)<input id="gr" value="'+esc(c.repo||'')+'" placeholder="usuario/lubrificacao-dados" autocapitalize="off"></label><label>Branch<input id="gb" value="'+esc(c.branch||'main')+'"></label><label>Token de acesso<input id="gt" type="password" value="'+esc(c.token||'')+'" autocomplete="off"></label><button class="b" onclick="saveGh()">Salvar e testar conexão</button></section>'
     +'<section class="g"><h2>Arquivos na pasta Downloads</h2><button class="b" onclick="togCsv()">CSV da hora ao salvar: '+(localStorage.getItem('csv')==='0'?'desligado':'ligado')+'</button></section>'
-    +'<section class="g"><h2>Cadastros</h2><p class="m">'+Object.keys(reg.w).length+' pessoas e '+Object.keys(reg.m).length+' máquinas, vindas do banco. Quem administra altera tudo na página de administração.</p><button class="b" onclick="atualizarCad()">Atualizar cadastros</button><button class="b" onclick="location.href=\'admin.html\'">Administração</button></section>';
+    +'<section class="g"><h2>Cadastros</h2><p class="m">'+Object.keys(reg.w).length+' pessoas e '+Object.keys(reg.m).length+' máquinas, vindas do banco. Quem administra altera tudo na página de administração.</p><button class="b" onclick="atualizarCad()">Atualizar cadastros</button><button class="b d" onclick="limparLocal()">Limpar cadastros deste tablet</button><button class="b" onclick="location.href=\'admin.html\'">Administração</button></section>';
+}
+function login(){
+  if($('#lu').value===GH.AUTH.u&&$('#lp').value===GH.AUTH.p){sessionStorage.setItem('auth','1');cfg()}
+  else toast('Usuário ou senha incorretos.',1);
+}
+function sair(){sessionStorage.removeItem('auth');cfg()}
+async function limparLocal(){
+  if(!confirm('Apagar as pessoas e máquinas guardadas neste tablet e baixar de novo do banco? Precisa de internet.'))return;
+  reg.w={};reg.m={};saveReg();
+  await atualizarCad(1);toast('Cadastros do tablet refeitos a partir do banco.');cfg();
 }
 async function atualizarCad(quiet){
   if(!GH.ok())return;
