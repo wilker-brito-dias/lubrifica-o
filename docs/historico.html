@@ -31,6 +31,16 @@ label{display:block;color:var(--mut);font-size:.95rem}
 .ls span,.ls small{display:block}
 .lt{text-align:right;font-weight:700;white-space:nowrap}
 .bar{height:10px;border-radius:6px;background:var(--acc);margin-top:6px}
+.bar.ref{height:6px;background:#5d7185}
+.bar.alert{background:var(--bad)}
+.ok{color:var(--ok)}
+.al{padding:10px 14px;border-radius:12px;border:1px solid rgba(245,165,36,.5);background:rgba(245,165,36,.1);margin:10px 0}
+.al.crit{border-color:var(--bad);background:rgba(255,107,107,.12)}
+.cht{display:flex;align-items:flex-end;gap:3px;height:140px;margin-top:14px}
+.cht div{flex:1;background:var(--acc);border-radius:4px 4px 0 0}
+.cht div.z{opacity:.25}
+.ax{display:flex;justify-content:space-between;gap:8px;margin-top:6px;font-size:.85rem;color:var(--mut)}
+input{display:block;width:100%;margin-top:6px;padding:14px;font:inherit;color:var(--ink);background:rgba(0,0,0,.3);border:1px solid var(--line);border-radius:14px}
 .rk{display:block;padding:10px 0;border-top:1px solid var(--line)}
 .x{background:none;border:1px solid var(--line);color:var(--acc);border-radius:10px;padding:6px 12px;font:inherit;margin-top:4px}
 .warn{padding:12px 14px;border-radius:14px;background:rgba(255,107,107,.12);border:1px solid rgba(255,107,107,.4);color:#ffb3b3}
@@ -67,18 +77,44 @@ async function load(){
     d.close();draw();
   }catch(e){box('<h1>Histórico</h1><p class="warn">Não foi possível ler o banco: '+esc((e&&e.message)||e)+'</p><button class="b" onclick="load()">Tentar de novo</button>')}
 }
+const DIA=864e5,LIM=()=>+localStorage.getItem('lim')||30;
+function analise(){
+  const now=Date.now(),res=[],al=[],by={};
+  ROWS.forEach(r=>(by[r.maquina]=by[r.maquina]||[]).push(r));
+  for(const m in by){
+    const rs=by[m],t=r=>now-new Date(r.fim).getTime();
+    const w=rs.filter(r=>t(r)<7*DIA),b=rs.filter(r=>t(r)>=7*DIA&&t(r)<35*DIA);
+    const sw=w.reduce((s,r)=>s+r.litros,0),sb=b.reduce((s,r)=>s+r.litros,0)/4,ex=sb>0?(sw/sb-1)*100:null;
+    res.push({m,sw,sb,ex,alerta:ex!=null&&ex>=LIM()});
+    if(ex!=null&&ex>=LIM())al.push({m,crit:ex>=2*LIM(),txt:'Últimos 7 dias: '+fmt(sw)+' L, '+Math.round(ex)+'% acima da média semanal anterior ('+fmt(sb)+' L).'});
+    const old=rs.filter(r=>t(r)>=7*DIA);
+    if(old.length>=5){
+      const av=old.reduce((s,r)=>s+r.litros,0)/old.length,big=w.filter(r=>r.litros>2*av);
+      if(big.length)al.push({m,crit:false,txt:big.length+' abastecimento(s) na semana com mais que o dobro do normal (média de '+fmt(av)+' L).'});
+    }
+  }
+  al.sort((a,b)=>b.crit-a.crit);res.sort((a,b)=>b.sw-a.sw);
+  return{res,al};
+}
 function draw(){
-  const rows=F?ROWS.filter(r=>r.maquina===F):ROWS;
-  const hoje=new Date().toDateString();
+  const rows=F?ROWS.filter(r=>r.maquina===F):ROWS,hoje=new Date().toDateString();
   const tot=rows.reduce((s,r)=>s+r.litros,0),th=rows.filter(r=>new Date(r.fim).toDateString()===hoje).reduce((s,r)=>s+r.litros,0);
-  const max=Math.max(...RANK.map(r=>r.total),1);
+  const{res,al}=analise(),base=res.some(r=>r.ex!=null),sd=d=>d.toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'});
+  const dias=[];for(let i=29;i>=0;i--){const d=new Date(Date.now()-i*DIA);dias.push({d,k:d.toLocaleDateString('pt-BR'),v:0})}
+  rows.forEach(r=>{const x=dias.find(y=>y.k===new Date(r.fim).toLocaleDateString('pt-BR'));if(x)x.v+=r.litros});
+  const mx=Math.max(...dias.map(x=>x.v),1),pk=dias.reduce((a,b)=>b.v>a.v?b:a),mx2=Math.max(...res.map(r=>Math.max(r.sw,r.sb)),1);
   $('#main').innerHTML=
    '<section class="g"><h1>Histórico</h1><div class="kpi"><p class="m"><b>'+rows.length+'</b>abastecimentos</p><p class="m"><b>'+fmt(tot)+'</b>litros no total</p><p class="m"><b>'+fmt(th)+'</b>litros hoje</p></div>'
    +'<div class="row"><button class="b" onclick="load()">Atualizar</button><button class="b" onclick="baixar()">Baixar banco (.db)</button></div></section>'
-   +'<section class="g"><h2>Consumo por máquina</h2><p class="m">Médias muito acima das outras podem indicar vazamento.</p>'
-   +RANK.map(r=>'<span class="rk"><b>'+esc(r.maquina)+'</b><span class="m"> '+fmt(r.total)+' L em '+r.n+' abastecimentos, média de '+fmt(r.media)+' L</span><div class="bar" style="width:'+Math.max(2,r.total/max*100)+'%"></div></span>').join('')+'</section>'
-   +'<section class="g"><h2>Abastecimentos</h2><label>Máquina<select onchange="F=this.value;draw()"><option value="">Todas</option>'+RANK.map(r=>'<option'+(r.maquina===F?' selected':'')+'>'+esc(r.maquina)+'</option>').join('')+'</select></label>'
-   +'<ul class="ls">'+rows.slice(0,100).map(r=>'<li><div><b>'+esc(r.maquina)+'</b><span class="m">'+esc(r.colaborador)+', '+new Date(r.fim).toLocaleString('pt-BR')+'</span>'+(r.obs?'<span class="m">'+esc(r.obs)+'</span>':'')+'</div><div class="lt">'+fmt(r.litros)+' L'+(r.foto?'<button class="x" data-p="'+esc(r.foto)+'" onclick="foto(this.dataset.p)">Ver foto</button>':'')+'</div></li>').join('')+'</ul></section>';
+   +'<section class="g"><h2>Alertas de consumo</h2>'
+   +(al.length?al.map(a=>'<p class="al'+(a.crit?' crit':'')+'"><b>'+esc(a.m)+'</b> ('+(a.crit?'crítico':'atenção')+')<br>'+a.txt+'</p>').join(''):base?'<p class="ok">Nenhuma máquina com consumo acima do limite.</p>':'<p class="m">Ainda não há histórico de mais de 7 dias para comparar o consumo.</p>')
+   +'<label>Limite de alerta (% acima da média semanal)<input type="number" inputmode="numeric" min="5" step="5" value="'+LIM()+'" onchange="localStorage.setItem(\'lim\',this.value||30);draw()"></label></section>'
+   +'<section class="g"><h2>Consumo diário, últimos 30 dias</h2><label>Máquina<select onchange="F=this.value;draw()"><option value="">Todas</option>'+RANK.map(r=>'<option'+(r.maquina===F?' selected':'')+'>'+esc(r.maquina)+'</option>').join('')+'</select></label>'
+   +'<div class="cht" role="img" aria-label="Litros abastecidos por dia nos últimos 30 dias">'+dias.map(x=>'<div'+(x.v?'':' class="z"')+' style="height:'+Math.max(x.v/mx*100,1.5)+'%"></div>').join('')+'</div>'
+   +'<div class="ax"><span>'+sd(dias[0].d)+'</span><span>pico: '+fmt(pk.v)+' L em '+sd(pk.d)+'</span><span>hoje</span></div></section>'
+   +'<section class="g"><h2>Esta semana contra a média</h2><p class="m">Barra grossa: últimos 7 dias. Barra fina: média semanal das 4 semanas anteriores. Vermelho: acima do limite.</p>'
+   +(res.map(r=>'<span class="rk"><b>'+esc(r.m)+'</b><span class="m"> '+fmt(r.sw)+' L'+(r.sb?', média anterior '+fmt(r.sb)+' L':'')+'</span><div class="bar'+(r.alerta?' alert':'')+'" style="width:'+Math.max(2,r.sw/mx2*100)+'%"></div>'+(r.sb?'<div class="bar ref" style="width:'+Math.max(2,r.sb/mx2*100)+'%"></div>':'')+'</span>').join('')||'<p class="m">Sem dados.</p>')+'</section>'
+   +'<section class="g"><h2>Abastecimentos'+(F?' de '+esc(F):'')+'</h2><ul class="ls">'+rows.slice(0,100).map(r=>'<li><div><b>'+esc(r.maquina)+'</b><span class="m">'+esc(r.colaborador)+', '+new Date(r.fim).toLocaleString('pt-BR')+'</span>'+(r.obs?'<span class="m">'+esc(r.obs)+'</span>':'')+'</div><div class="lt">'+fmt(r.litros)+' L'+(r.foto?'<button class="x" data-p="'+esc(r.foto)+'" onclick="foto(this.dataset.p)">Ver foto</button>':'')+'</div></li>').join('')+'</ul></section>';
 }
 async function foto(p){
   try{const r=await fetch(GH.u(p,1),{headers:GH.h(1)});if(!r.ok)throw new Error('GitHub '+r.status);$('#ov img').src=URL.createObjectURL(await r.blob());$('#ov').hidden=false}
