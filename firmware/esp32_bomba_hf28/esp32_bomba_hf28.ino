@@ -490,8 +490,7 @@ void setup() {
   setUiState(UI_BOOT);
   Serial.println("\n[BOOT] Iniciando controlador da bomba HF-28.");
 
-  // Prioridade operacional: anunciar o BLE primeiro. Mesmo que o OLED trave,
-  // esteja ausente ou falhe na inicializacao, o servidor BLE ja estara ativo.
+  // Prioridade operacional: anunciar o BLE primeiro, antes de inicializar a tela TFT.
   initBLE();
 
   // Display TFT inicializado depois do BLE, para priorizar a comunicacao.
