@@ -100,6 +100,13 @@ enum UiState : uint8_t {
   UI_DISCONNECTED
 };
 
+// Definição antes de qualquer função que use UiSnapshot.
+// Isso também evita erro de protótipo automático gerado pelo Arduino IDE.
+struct UiSnapshot {
+  UiState state;
+  uint32_t changedAt;
+};
+
 enum RobotInteraction : uint8_t {
   ROBOT_NORMAL = 0,
   ROBOT_ANGRY,
@@ -175,11 +182,6 @@ static void updateRobotInteractions(uint32_t now) {
     robotInteraction = ROBOT_NORMAL;
   }
 }
-
-struct UiSnapshot {
-  UiState state;
-  uint32_t changedAt;
-};
 
 static portMUX_TYPE uiMux = portMUX_INITIALIZER_UNLOCKED;
 static volatile UiState currentUiState = UI_BOOT;
