@@ -38,7 +38,7 @@ A placa mostrada no projeto é a LILYGO TTGO T-Display clássica: ela usa uma te
 4. Abra o Monitor Serial em 115200 baud.
 5. No Android, abra o PWA em contexto seguro (HTTPS), toque no botão de conexão Bluetooth e selecione `Bomba_HF28`. Quando o sistema solicitar o pareamento, use o PIN `123456`.
 
-O BLE é inicializado antes da tela. A interface foi redesenhada para evitar oscilação: o layout completo só é redesenhado quando o estado muda; as animações atualizam apenas a região interna do rosto, sem limpar a tela toda a cada frame.
+O BLE é inicializado antes da tela. A interface foi redesenhada para evitar oscilação: o layout completo só é redesenhado quando o estado muda. O rosto é composto em um buffer de RAM (GFXcanvas16) e enviado ao ST7789 em um único bloco SPI; assim, os olhos não são apagados e redesenhados diretamente na tela a cada frame.
 
 ## Expressões da tela TFT
 
@@ -49,7 +49,7 @@ O BLE é inicializado antes da tela. A interface foi redesenhada para evitar osc
 - Comando `0`: olhos semicerrados e expressão neutra — `Bomba Travada`
 - Desconexão: olhos tristes com lágrimas estilizadas — `Conexao Perdida` por 3 s, depois volta à busca.
 
-O rosto usa um painel duplo de alto contraste, paleta por estado, cabeçalho e indicador inferior. A tela inteira não é redesenhada nos ciclos de animação; somente os pixels da área facial são atualizados.
+O rosto usa um painel duplo de alto contraste, olhos luminosos com pupilas e reflexos, sobrancelhas, sorriso/boca por estado, bochechas, lágrimas estilizadas, cabeçalho e indicador inferior. A tela inteira é redesenhada apenas quando muda o estado; durante as animações, somente a área facial pré-composta em RAM é enviada ao display.
 
 ## Segurança operacional
 
