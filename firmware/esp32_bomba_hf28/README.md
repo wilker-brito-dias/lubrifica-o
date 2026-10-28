@@ -1,6 +1,6 @@
 # Firmware ESP32 — Bomba HF-28
 
-Este diretório contém o firmware que conecta o PWA do projeto Lubrifica-o à placa ESP32-WROOM-32E por Web Bluetooth (BLE). Ele foi mantido separado dos arquivos HTML/JS da aplicação publicada.
+Este diretório contém o firmware que conecta o PWA do projeto Lubrifica-o à placa LILYGO TTGO T-Display por Web Bluetooth (BLE). Ele foi mantido separado dos arquivos HTML/JS da aplicação publicada.
 
 ## Compatibilidade com o PWA
 
