@@ -19,28 +19,28 @@ A implementação corresponde à versão em `docs/index.html`:
 | Sinal | ESP32 |
 |---|---:|
 | Entrada de comando do módulo de relé | GPIO 26 |
-| OLED I2C (pinagem detectada automaticamente) | GPIO 21/22, 4/15 ou 5/4 |
-| OLED endereço I2C | 0x3C ou 0x3D |
-| OLED alimentação | Conforme a placa/display |
-| OLED GND | GND comum conforme especificação do módulo |
+| Display TFT ST7789 — MOSI | GPIO 19 |
+| Display TFT ST7789 — SCLK | GPIO 18 |
+| Display TFT ST7789 — CS | GPIO 5 |
+| Display TFT ST7789 — DC | GPIO 16 |
+| Display TFT ST7789 — RST | GPIO 23 |
+| Display TFT — backlight (BL) | GPIO 4 |
 
 O relé foi solicitado como ativo em nível HIGH: GPIO 26 HIGH liga e LOW desliga. Confirme essa lógica no módulo real antes de ligar a bomba.
 
-O firmware agora testa automaticamente três pinagens I²C comuns em placas TTGO/LILYGO com SSD1306: SDA 21/SCL 22, SDA 4/SCL 15 e SDA 5/SCL 4. No Monitor Serial, procure a linha `[OLED] SSD1306 encontrado` para saber quais pinos e endereço foram detectados.
-
-**Atenção:** a TTGO T-Display usa normalmente uma tela TFT ST7789 por SPI, não SSD1306. Se o seu modelo for T-Display, este driver OLED não é compatível; será necessário adaptar a interface para TFT.
+A placa mostrada no projeto é a LILYGO TTGO T-Display clássica: ela usa uma tela TFT colorida ST7789V de 240 × 135 pixels por SPI, e não um OLED SSD1306 por I²C. O firmware inicializa o backlight no GPIO 4 e configura os sinais SPI internos da placa. No Monitor Serial, procure a linha `[TFT] TTGO T-Display ST7789 iniciado`.
 
 ## Bibliotecas / compilação
 
 1. No Arduino IDE, selecione uma placa ESP32 compatível (por exemplo, ESP32 Dev Module) e Arduino-ESP32 Core 3.x.
-2. Instale **Adafruit GFX Library** e **Adafruit SSD1306** pelo Library Manager.
+2. Instale **Adafruit GFX Library** e **Adafruit ST7735 and ST7789 Library** pelo Library Manager.
 3. Abra `esp32_bomba_hf28.ino` e faça upload.
 4. Abra o Monitor Serial em 115200 baud.
 5. No Android, abra o PWA em contexto seguro (HTTPS), toque no botão de conexão Bluetooth e selecione `Bomba_HF28`. Quando o sistema solicitar o pareamento, use o PIN `123456`.
 
-O OLED é opcional: o firmware faz uma detecção I2C finita e não entra em uma espera infinita caso o SSD1306 não esteja presente. O BLE é inicializado mesmo que o display não responda.
+O BLE é inicializado antes da tela. O driver ST7789 não oferece detecção de presença pelo barramento (a tela é controlada por SPI sem MISO); portanto, valide o desenho na placa após a gravação. Uma falha de tela não altera a lógica de segurança do relé.
 
-## Expressões do OLED
+## Expressões da tela TFT
 
 - Boot: olhos abrindo — `Iniciando Sistema`
 - Busca: pupilas se movimentando — `Aguardando Bluetooth`
