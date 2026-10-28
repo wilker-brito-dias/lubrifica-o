@@ -351,8 +351,9 @@ static void drawFaceExpression(UiState state, RobotInteraction interaction,
       faceCanvas.fillRoundRect(rightEye - 21 - sway, 11 - bob, 42, 30, 10, danceB);
       faceCanvas.fillRoundRect(leftEye - 15 + sway, 15 + bob, 30, 22, 7, BG_COLOR);
       faceCanvas.fillRoundRect(rightEye - 15 - sway, 15 - bob, 30, 22, 7, BG_COLOR);
-      faceCanvas.fillCircle(leftEye + sway + ((phase % 3U) - 1) * 3, 25 + bob, 6, color565(0, 145, 190));
-      faceCanvas.fillCircle(rightEye - sway + ((phase % 3U) - 1) * 3, 25 - bob, 6, color565(145, 35, 145));
+      const int8_t pupilShift = static_cast<int8_t>(phase % 3U) - 1;
+      faceCanvas.fillCircle(leftEye + sway + pupilShift * 3, 25 + bob, 6, color565(0, 145, 190));
+      faceCanvas.fillCircle(rightEye - sway + pupilShift * 3, 25 - bob, 6, color565(145, 35, 145));
       faceCanvas.fillCircle(leftEye + sway - 2, 22 + bob, 2, ST77XX_WHITE);
       faceCanvas.fillCircle(rightEye - sway - 2, 22 - bob, 2, ST77XX_WHITE);
     }
@@ -726,9 +727,10 @@ static void initTFT() {
                 TFT_MOSI_PIN, TFT_SCLK_PIN, TFT_CS_PIN, TFT_DC_PIN,
                 TFT_RST_PIN, TFT_BL_PIN);
 
-  drawStaticScreen(UI_BOOT);
+  drawStaticScreen(UI_BOOT, ROBOT_NORMAL);
   for (uint8_t frame = 0; frame < 5; ++frame) {
-    drawFaceExpression(UI_BOOT, static_cast<uint32_t>(frame) * 90U, millis());
+    drawFaceExpression(UI_BOOT, ROBOT_NORMAL,
+                       static_cast<uint32_t>(frame) * 90U, millis());
     delay(70);
   }
 }
