@@ -10,26 +10,31 @@
 <style>
 :root{--bg:#0c141d;--ink:#e8eef5;--mut:#8ea0b3;--acc:#f5a524;--ok:#3ddc97;--bad:#ff6b6b;--line:rgba(255,255,255,.13);color-scheme:dark}
 *{box-sizing:border-box}
-html,body{margin:0}
-body{background:radial-gradient(900px 520px at 85% -10%,#21405f 0,transparent 62%),radial-gradient(700px 420px at -10% 110%,#3a2a10 0,transparent 60%),var(--bg);background-attachment:fixed;color:var(--ink);font:17px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;min-height:100vh;padding:env(safe-area-inset-top) 16px calc(88px + env(safe-area-inset-bottom))}
-#main{max-width:720px;margin:0 auto;display:grid;gap:16px;padding-top:16px}
-h1{font-size:1.7rem;line-height:1.2;margin:.2em 0 .3em;letter-spacing:-.01em}
+html,body{margin:0;max-width:100%}
+html{-webkit-text-size-adjust:100%}
+body{background:radial-gradient(900px 520px at 85% -10%,#21405f 0,transparent 62%),radial-gradient(700px 420px at -10% 110%,#3a2a10 0,transparent 60%),var(--bg);background-attachment:fixed;color:var(--ink);font:17px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;min-height:100vh;min-height:100dvh;overflow-x:hidden;padding:env(safe-area-inset-top) clamp(10px,3vw,16px) calc(88px + env(safe-area-inset-bottom))}
+#main{width:100%;max-width:720px;margin:0 auto;display:grid;gap:clamp(10px,2.5vw,16px);padding-top:clamp(8px,2.5vw,16px)}
+#main>*,.g>*{min-width:0}
+h1,h2,h3,p,b,span,label,button,li{overflow-wrap:anywhere}
+img,svg{max-width:100%}
+h1{font-size:clamp(1.3rem,5.4vw,1.7rem);line-height:1.2;margin:.2em 0 .3em;letter-spacing:-.01em}
 h2{font-size:1.15rem;margin:0 0 .6em}
 p{margin:.3em 0}
 .m{color:var(--mut)}
-.g{background:rgba(255,255,255,.06);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);border:1px solid var(--line);border-radius:20px;padding:22px}
+.g{background:rgba(255,255,255,.06);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);border:1px solid var(--line);border-radius:20px;padding:clamp(14px,4vw,22px)}
 .b{display:block;width:100%;min-height:58px;margin-top:12px;padding:14px 18px;font:inherit;font-weight:600;color:var(--ink);background:rgba(255,255,255,.08);border:1px solid var(--line);border-radius:16px;cursor:pointer}
 .b.p{background:var(--acc);border-color:var(--acc);color:#1b1200}
 .b:focus-visible,select:focus-visible,#nav button:focus-visible{outline:3px solid #7cc4ff;outline-offset:2px}
-.row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-.kpi{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
-.kpi b{display:block;font-size:1.3rem;font-variant-numeric:tabular-nums}
-select{width:100%;margin-top:6px;padding:14px;font:inherit;color:var(--ink);background:rgba(0,0,0,.3);border:1px solid var(--line);border-radius:14px}
+.row{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,150px),1fr));gap:12px}
+.kpi{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,120px),1fr));gap:12px}
+.kpi b{display:block;font-size:clamp(1.05rem,4.6vw,1.35rem);font-variant-numeric:tabular-nums}
+select{display:block;width:100%;max-width:100%;min-width:0;margin-top:6px;padding:14px;font:inherit;color:var(--ink);background:rgba(0,0,0,.3);border:1px solid var(--line);border-radius:14px}
 label{display:block;color:var(--mut);font-size:.95rem}
 .ls{list-style:none;margin:14px 0 0;padding:0}
-.ls li{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 0;border-top:1px solid var(--line)}
+.ls li{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:8px 12px;padding:12px 0;border-top:1px solid var(--line)}
 .ls span,.ls small{display:block}
-.lt{text-align:right;font-weight:700;white-space:nowrap}
+.ls li>div:first-child{flex:1 1 180px;min-width:0}
+.lt{text-align:right;font-weight:700;margin-left:auto}
 .bar{height:10px;border-radius:6px;background:var(--acc);margin-top:6px}
 .bar.ref{height:6px;background:#5d7185}
 .bar.alert{background:var(--bad)}
@@ -42,7 +47,7 @@ label{display:block;color:var(--mut);font-size:.95rem}
 .seg{display:flex;gap:8px;margin-top:14px}
 .seg button{flex:1;min-height:52px;font:inherit;font-weight:600;color:var(--mut);background:rgba(255,255,255,.06);border:1px solid var(--line);border-radius:14px}
 .seg button.on{color:#1b1200;background:var(--acc);border-color:var(--acc)}
-.r2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.r2{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,150px),1fr));gap:12px}
 .pie{display:block;width:min(100%,280px);margin:16px auto}
 .lg{list-style:none;margin:8px 0 0;padding:0}
 .lg li{display:flex;gap:12px;padding:10px 0;border-top:1px solid var(--line)}
@@ -50,11 +55,12 @@ label{display:block;color:var(--mut);font-size:.95rem}
 .lg div{flex:1}
 .lg span{display:block}
 .bx{height:16px;border-radius:6px;margin-top:6px}
-.mes{flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:4px;height:100%;font-size:.75rem;color:var(--mut);text-align:center}
+.mes{flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:4px;height:100%;min-width:0;font-size:clamp(.56rem,2.3vw,.75rem);color:var(--mut);text-align:center}
+.mes small{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mes i{display:block;width:100%;background:#4cc9f0;border-radius:4px 4px 0 0}
 .cht.mm{height:200px}
-.ax{display:flex;justify-content:space-between;gap:8px;margin-top:6px;font-size:.85rem;color:var(--mut)}
-input{display:block;width:100%;margin-top:6px;padding:14px;font:inherit;color:var(--ink);background:rgba(0,0,0,.3);border:1px solid var(--line);border-radius:14px}
+.ax{display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 8px;margin-top:6px;font-size:.85rem;color:var(--mut)}
+input{display:block;width:100%;max-width:100%;min-width:0;margin-top:6px;padding:14px;font:inherit;color:var(--ink);background:rgba(0,0,0,.3);border:1px solid var(--line);border-radius:14px}
 .rk{display:block;padding:10px 0;border-top:1px solid var(--line)}
 .x{background:none;border:1px solid var(--line);color:var(--acc);border-radius:10px;padding:6px 12px;font:inherit;margin-top:4px}
 .warn{padding:12px 14px;border-radius:14px;background:rgba(255,107,107,.12);border:1px solid rgba(255,107,107,.4);color:#ffb3b3}
@@ -62,8 +68,29 @@ input{display:block;width:100%;margin-top:6px;padding:14px;font:inherit;color:va
 #ov[hidden]{display:none}
 #ov img{max-width:100%;max-height:100%;border-radius:14px}
 #nav{position:fixed;left:0;right:0;bottom:0;display:flex;gap:10px;padding:10px 16px calc(10px + env(safe-area-inset-bottom));background:rgba(12,20,29,.85);-webkit-backdrop-filter:blur(16px);backdrop-filter:blur(16px);border-top:1px solid var(--line)}
-#nav button{flex:1;min-height:56px;font:inherit;font-weight:600;color:var(--mut);background:none;border:1px solid transparent;border-radius:16px}
+#nav button{flex:1;min-width:0;min-height:56px;font:inherit;font-size:clamp(.8rem,3.3vw,1rem);font-weight:600;color:var(--mut);background:none;border:1px solid transparent;border-radius:16px}
 #nav button.on{color:var(--acc);border-color:var(--acc);background:rgba(245,165,36,.1)}
+/* calendário, meses e dias */
+.cal-h{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.cal-h b{flex:1;text-align:center}
+.cal-h button{flex:none;width:48px;height:48px;font:inherit;font-size:1.3rem;color:var(--ink);background:rgba(255,255,255,.08);border:1px solid var(--line);border-radius:14px;cursor:pointer}
+.cal{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px;margin-top:12px}
+.cal .wd{text-align:center;font-size:.75rem;color:var(--mut);padding:4px 0}
+.cd{position:relative;aspect-ratio:1;min-height:38px;display:grid;place-items:center;padding:0;font:inherit;color:var(--ink);background:rgba(255,255,255,.04);border:1px solid transparent;border-radius:12px;cursor:pointer}
+.cd.has{background:rgba(245,165,36,.14)}
+.cd.has::after{content:"";position:absolute;bottom:5px;width:5px;height:5px;border-radius:50%;background:var(--acc)}
+.cd.today{border-color:var(--mut)}
+.cd.sel{background:var(--acc);color:#1b1200;font-weight:700}
+.cd.sel::after{background:#1b1200}
+.cd:focus-visible,.dy:focus-visible,.mt summary:focus-visible,.cal-h button:focus-visible{outline:3px solid #7cc4ff;outline-offset:2px}
+.mt{border-top:1px solid var(--line)}
+.mt summary{list-style:none;display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:4px 8px;padding:14px 0;min-height:48px;cursor:pointer}
+.mt summary::-webkit-details-marker{display:none}
+.mt summary::before{content:"\25B8";color:var(--acc);margin-right:6px;transition:transform .15s}
+.mt[open] summary::before{transform:rotate(90deg)}
+.mt summary b{flex:1 1 120px}
+.dy{display:flex;flex-wrap:wrap;justify-content:space-between;gap:2px 8px;width:100%;min-height:48px;margin:0 0 6px;padding:10px 12px;text-align:left;font:inherit;color:var(--ink);background:rgba(255,255,255,.05);border:1px solid var(--line);border-radius:12px;cursor:pointer}
+.dy.sel{border-color:var(--acc);background:rgba(245,165,36,.14)}
 </style>
 </head>
 <body>
@@ -113,6 +140,7 @@ function analise(){
 }
 const p2=n=>String(n).padStart(2,'0');
 const brl=n=>Number(n||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
+const brlc=n=>{n=Number(n||0);return n>=1000?'R$ '+fmt(n/1000)+' mil':'R$ '+Math.round(n)};
 const brl0=n=>Number(n||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL',maximumFractionDigits:0});
 let MED='l';
 const PRECO=()=>OLEO&&OLEO.preco!=null?OLEO.preco:0;
@@ -124,7 +152,7 @@ function oleoSec(){
   if(!OLEO)return'<section class="g"><h2>Óleo em uso</h2><p class="m">Nenhum óleo cadastrado. Cadastre na Administração para calcular os gastos.</p></section>';
   const o=OLEO,L=ROWS.reduce((s,r)=>s+r.litros,0);
   return'<section class="g"><h2>Óleo em uso</h2><p><b>'+esc(o.nome)+'</b> '+esc(o.viscosidade||'')+'</p><p class="m">'
-    +(o.codigo?'Requisição: '+esc(o.codigo)+'. ':'')+(o.preco!=null?'Preço: '+brl(o.preco)+' por litro. ':'Preço não informado. ')+(o.fornecedor?'Fornecedor: '+esc(o.fornecedor)+'.':'')+'</p>'
+    +(o.codigo?'Requisição: '+esc(o.codigo)+'. ':'')+(o.preco!=null?'Preço: '+brl(o.preco)+' por litro. ':'Preço não informado. ')+(o.fornecedor?'Fornecedor: '+esc(o.fornecedor)+'. ':'')+'Selecionado na tela inicial do app.</p>'
     +(o.bombona>0?'<p class="m">Já consumido: '+fmt(L)+' L, cerca de '+fmt(L/o.bombona)+' bombonas de '+fmt(o.bombona)+' L.</p>':'')+(o.obs?'<p class="m">'+esc(o.obs)+'</p>':'')+'</section>';
 }
 function gastoMes(){
@@ -133,7 +161,7 @@ function gastoMes(){
   ROWS.forEach(r=>{const d=new Date(r.fim),x=ms.find(y=>y.k===d.getFullYear()+'-'+p2(d.getMonth()+1));if(x)x.c+=custo(r)});
   const mx=Math.max(...ms.map(x=>x.c),1),tot=ms.reduce((s,x)=>s+x.c,0);
   return'<section class="g"><h2>Gasto por mês, últimos 6 meses</h2><p class="m">Total no período: '+brl(tot)+', média de '+brl(tot/6)+' por mês.</p><div class="cht mm" role="img" aria-label="Gasto em reais por mês">'
-    +ms.map(x=>'<span class="mes"><small>'+brl0(x.c)+'</small><i style="height:'+Math.max(x.c/mx*70,1)+'%"></i>'+esc(x.t)+'</span>').join('')+'</div></section>';
+    +ms.map(x=>'<span class="mes"><small>'+brlc(x.c)+'</small><i style="height:'+Math.max(x.c/mx*70,1)+'%"></i>'+esc(x.t)+'</span>').join('')+'</div></section>';
 }
 let CH={tipo:'pizza',por:'maquina',dias:30};
 const COR=['#f5a524','#4cc9f0','#3ddc97','#ff6b6b','#b48cff','#ffd166','#f78fb3','#7ca5ff','#c3e88d'];
@@ -157,7 +185,81 @@ function dist(){
   const mx=a[0].l;
   return h+'<ul class="lg">'+a.map(x=>'<li><i style="background:'+x.c+'"></i><div><b>'+esc(x.k)+'</b><span class="m">'+uf(x.l)+', '+x.p.toFixed(1).replace('.',',')+'% do total</span><span class="m">'+x.n+' abastecimentos, média de '+uf(x.l/x.n)+'</span>'+(CH.tipo==='barras'?'<div class="bx" style="width:'+Math.max(2,x.l/mx*100)+'%;background:'+x.c+'"></div>':'')+'</div></li>').join('')+'</ul></section>';
 }
+/* ---------- Registros por data: calendário, meses e dias ---------- */
+const dkey=d=>d.getFullYear()+'-'+p2(d.getMonth()+1)+'-'+p2(d.getDate());
+const cap=s=>s.charAt(0).toUpperCase()+s.slice(1);
+const nomeMes=(y,m)=>cap(new Date(y,m,1).toLocaleDateString('pt-BR',{month:'long',year:'numeric'}));
+const nomeDia=k=>{const[y,m,d]=k.split('-').map(Number);return cap(new Date(y,m-1,d).toLocaleDateString('pt-BR',{weekday:'long',day:'numeric',month:'long',year:'numeric'}))};
+let SELK='',CAL=null;
+const OPEN=new Set();
+const visiveis=()=>F?ROWS.filter(r=>r.maquina===F):ROWS;
+function selMaq(){
+  return'<label>Máquina<select onchange="F=this.value;draw()"><option value="">Todas</option>'+RANK.map(r=>'<option'+(r.maquina===F?' selected':'')+'>'+esc(r.maquina)+'</option>').join('')+'</select></label>';
+}
+function porDia(rows){
+  const g={};
+  for(const r of rows){const k=dkey(new Date(r.fim)),x=g[k]||(g[k]={n:0,l:0,c:0});x.n++;x.l+=r.litros;x.c+=custo(r)}
+  return g;
+}
+function initSel(){
+  if(SELK)return;
+  const ks=Object.keys(porDia(visiveis())).sort();
+  SELK=ks.length?ks[ks.length-1]:dkey(new Date());
+  const[y,m]=SELK.split('-').map(Number);CAL={y,m:m-1};OPEN.add(SELK.slice(0,7));
+}
+function calHtml(g){
+  const{y,m}=CAL,hoje=dkey(new Date()),ini=new Date(y,m,1).getDay(),n=new Date(y,m+1,0).getDate();
+  let c='<div class="cal-h"><button onclick="calNav(-1)" aria-label="Mês anterior">&#8249;</button><b>'+esc(nomeMes(y,m))+'</b><button onclick="calNav(1)" aria-label="Próximo mês">&#8250;</button></div><div class="cal">'
+    +['D','S','T','Q','Q','S','S'].map(x=>'<span class="wd">'+x+'</span>').join('');
+  for(let i=0;i<ini;i++)c+='<span></span>';
+  for(let d=1;d<=n;d++){
+    const k=y+'-'+p2(m+1)+'-'+p2(d),x=g[k];
+    c+='<button class="cd'+(x?' has':'')+(k===SELK?' sel':'')+(k===hoje?' today':'')+'" data-d="'+k+'" aria-pressed="'+(k===SELK)+'" aria-label="'+esc(nomeDia(k))+(x?', '+x.n+' abastecimentos':'')+'" onclick="pick(this.dataset.d)">'+d+'</button>';
+  }
+  return c+'</div><div class="row"><button class="b" onclick="pick(dkey(new Date()))">Hoje</button><button class="b" onclick="pickMes()">Ver o mês inteiro</button></div>';
+}
+function treeHtml(g){
+  const ms={};
+  Object.keys(g).sort().reverse().forEach(k=>{const mk=k.slice(0,7),x=g[k],t=ms[mk]||(ms[mk]={n:0,l:0,c:0,ds:[]});t.n+=x.n;t.l+=x.l;t.c+=x.c;t.ds.push(k)});
+  const ks=Object.keys(ms);
+  if(!ks.length)return'<p class="m">Nenhum registro.</p>';
+  return ks.map(mk=>{
+    const t=ms[mk],[y,m]=mk.split('-').map(Number);
+    return'<details class="mt"'+(OPEN.has(mk)?' open':'')+' ontoggle="togM(\''+mk+'\',this.open)"><summary><b>'+esc(nomeMes(y,m-1))+'</b><span class="m">'+t.n+' abast., '+fmt(t.l)+' L, '+brl(t.c)+'</span></summary>'
+      +'<button class="dy'+(SELK===mk?' sel':'')+'" onclick="pick(\''+mk+'\')"><b>Mês inteiro</b><span class="m">'+t.n+' abastecimentos</span></button>'
+      +t.ds.map(k=>{const x=g[k],d=Number(k.slice(8));return'<button class="dy'+(k===SELK?' sel':'')+'" onclick="pick(\''+k+'\')"><b>'+p2(d)+', '+esc(new Date(y,m-1,d).toLocaleDateString('pt-BR',{weekday:'short'}))+'</b><span class="m">'+x.n+' abast., '+fmt(x.l)+' L, '+brl(x.c)+'</span></button>'}).join('')+'</details>';
+  }).join('');
+}
+const rowHtml=r=>{
+  const d=new Date(r.fim),h=d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}),dia=SELK.length===7?d.toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'})+' ':'';
+  const dur=r.duracao_s?', bomba ligada por '+Math.floor(r.duracao_s/60)+' min '+(r.duracao_s%60)+' s':'';
+  return'<li><div><b>'+esc(r.maquina)+'</b><span class="m">'+dia+h+', '+esc(r.colaborador)+'</span><span class="m">'+esc(r.oleo||r.produto||'')+dur+'</span>'+(r.obs?'<span class="m">'+esc(r.obs)+'</span>':'')
+    +'</div><div class="lt">'+fmt(r.litros)+' L<span class="m">'+brl(custo(r))+'</span>'+(r.foto?'<button class="x" data-p="'+esc(r.foto)+'" onclick="foto(this.dataset.p)">Ver foto</button>':'')+'</div></li>';
+};
+function diaHtml(rows){
+  const sel=rows.filter(r=>dkey(new Date(r.fim)).startsWith(SELK)).sort((a,b)=>a.fim<b.fim?1:-1);
+  const L=sel.reduce((s,r)=>s+r.litros,0),C=sel.reduce((s,r)=>s+custo(r),0);
+  const tit=SELK.length===7?nomeMes(+SELK.slice(0,4),+SELK.slice(5)-1):nomeDia(SELK);
+  return'<h2>'+esc(tit)+(F?' ('+esc(F)+')':'')+'</h2><p class="m">'+sel.length+' abastecimentos, '+fmt(L)+' L, '+brl(C)+'</p><ul class="ls">'+(sel.map(rowHtml).join('')||'<li class="m">Nenhum abastecimento neste período.</li>')+'</ul>';
+}
+const datasHtml=()=>'<section class="g"><h2>Registros por data</h2>'+selMaq()+'<div id="cal"></div></section><section class="g"><h2>Meses e dias</h2><div id="tree"></div></section><section class="g" id="dia"></section>';
+function drawDatas(){
+  const rows=visiveis(),g=porDia(rows),c=$('#cal'),t=$('#tree'),d=$('#dia');
+  if(c)c.innerHTML=calHtml(g);
+  if(t)t.innerHTML=treeHtml(g);
+  if(d)d.innerHTML=diaHtml(rows);
+}
+function calNav(dl){const d=new Date(CAL.y,CAL.m+dl,1);CAL={y:d.getFullYear(),m:d.getMonth()};drawDatas()}
+function togM(mk,o){if(o)OPEN.add(mk);else OPEN.delete(mk)}
+function pick(k){
+  SELK=k;const[y,m]=k.split('-').map(Number);CAL={y,m:m-1};OPEN.add(k.slice(0,7));
+  drawDatas();
+  const e=$('#dia');if(e&&e.scrollIntoView)e.scrollIntoView({behavior:'smooth',block:'start'});
+}
+function pickMes(){pick(CAL.y+'-'+p2(CAL.m+1))}
+
 function draw(){
+  initSel();
   const rows=F?ROWS.filter(r=>r.maquina===F):ROWS,hoje=new Date().toDateString();
   const tot=rows.reduce((s,r)=>s+r.litros,0),th=rows.filter(r=>new Date(r.fim).toDateString()===hoje).reduce((s,r)=>s+r.litros,0);
   const ct=f=>rows.filter(f).reduce((s,r)=>s+custo(r),0),gt=ct(()=>1),ghj=ct(r=>new Date(r.fim).toDateString()===hoje),g30=ct(r=>Date.now()-new Date(r.fim).getTime()<30*DIA);
@@ -172,13 +274,15 @@ function draw(){
    +'<section class="g"><h2>Alertas de consumo</h2>'
    +(al.length?al.map(a=>'<p class="al'+(a.crit?' crit':'')+'"><b>'+esc(a.m)+'</b> ('+(a.crit?'crítico':'atenção')+')<br>'+a.txt+'</p>').join(''):base?'<p class="ok">Nenhuma máquina com consumo acima do limite.</p>':'<p class="m">Ainda não há histórico de mais de 7 dias para comparar o consumo.</p>')
    +'<label>Limite de alerta (% acima da média semanal)<input type="number" inputmode="numeric" min="5" step="5" value="'+LIM()+'" onchange="localStorage.setItem(\'lim\',this.value||30);draw()"></label></section>'
-   +'<section class="g"><h2>Consumo diário, últimos 30 dias</h2>'+medSeg()+'<label>Máquina<select onchange="F=this.value;draw()"><option value="">Todas</option>'+RANK.map(r=>'<option'+(r.maquina===F?' selected':'')+'>'+esc(r.maquina)+'</option>').join('')+'</select></label>'
+   +datasHtml()
+   +'<section class="g"><h2>Consumo diário, últimos 30 dias</h2>'+medSeg()+selMaq()
    +'<div class="cht" role="img" aria-label="Litros abastecidos por dia nos últimos 30 dias">'+dias.map(x=>'<div'+(x.v?'':' class="z"')+' style="height:'+Math.max(x.v/mx*100,1.5)+'%"></div>').join('')+'</div>'
    +'<div class="ax"><span>'+sd(dias[0].d)+'</span><span>pico: '+uf(pk.v)+' em '+sd(pk.d)+'</span><span>hoje</span></div></section>'
    +dist()+gastoMes()
    +'<section class="g"><h2>Esta semana contra a média</h2><p class="m">Barra grossa: últimos 7 dias. Barra fina: média semanal das 4 semanas anteriores. Vermelho: acima do limite.</p>'
    +(res.map(r=>'<span class="rk"><b>'+esc(r.m)+'</b><span class="m"> '+fmt(r.sw)+' L'+(r.sb?', média anterior '+fmt(r.sb)+' L':'')+'</span><div class="bar'+(r.alerta?' alert':'')+'" style="width:'+Math.max(2,r.sw/mx2*100)+'%"></div>'+(r.sb?'<div class="bar ref" style="width:'+Math.max(2,r.sb/mx2*100)+'%"></div>':'')+'</span>').join('')||'<p class="m">Sem dados.</p>')+'</section>'
-   +'<section class="g"><h2>Abastecimentos'+(F?' de '+esc(F):'')+'</h2><ul class="ls">'+rows.slice(0,100).map(r=>'<li><div><b>'+esc(r.maquina)+'</b><span class="m">'+esc(r.colaborador)+', '+new Date(r.fim).toLocaleString('pt-BR')+'</span>'+(r.obs?'<span class="m">'+esc(r.obs)+'</span>':'')+'</div><div class="lt">'+fmt(r.litros)+' L<span class="m">'+brl(custo(r))+'</span>'+(r.foto?'<button class="x" data-p="'+esc(r.foto)+'" onclick="foto(this.dataset.p)">Ver foto</button>':'')+'</div></li>').join('')+'</ul></section>';
+   +'';
+  drawDatas();
 }
 async function foto(p){
   try{const r=await fetch(GH.u(p,1),{headers:GH.h(1)});if(!r.ok)throw new Error('GitHub '+r.status);$('#ov img').src=URL.createObjectURL(await r.blob());$('#ov').hidden=false}
