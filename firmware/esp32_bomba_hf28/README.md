@@ -12,7 +12,7 @@ A implementação corresponde à versão em `docs/index.html`:
 
 ## Arquivo
 
-- `esp32_bomba_hf28.ino`: firmware completo, callbacks BLE, segurança do pareamento, fail-safe e interface animada da TFT.
+- `esp32_bomba_hf28.ino`: firmware completo, callbacks BLE, segurança do pareamento, fail-safe e interface animada/interativa da TFT.
 
 ## Hardware
 
@@ -39,6 +39,17 @@ A placa mostrada no projeto é a LILYGO TTGO T-Display clássica: ela usa uma te
 5. No Android, abra o PWA em contexto seguro (HTTPS), toque no botão de conexão Bluetooth e selecione `Bomba_HF28`. Quando o sistema solicitar o pareamento, use o PIN `123456`.
 
 O BLE é inicializado antes da tela. A interface foi redesenhada para evitar oscilação: o layout completo só é redesenhado quando o estado muda. O rosto é composto em um buffer de RAM (GFXcanvas16) e enviado ao ST7789 em um único bloco SPI; assim, os olhos não são apagados e redesenhados diretamente na tela a cada frame.
+
+## Interações físicas com o robô
+
+Os dois botões de fábrica da TTGO T-Display foram mapeados para animações visuais. Eles não controlam a bomba nem mudam o estado do relé:
+
+| Botão | GPIO | Ação |
+|---|---:|---|
+| BOOT | 0 | Ativa a expressão de raiva por cerca de 3,8 segundos |
+| Botão de usuário | 35 | Ativa uma sequência de dança por cerca de 7 segundos |
+
+O código usa debounce sem bloqueio para ignorar o ruído mecânico dos botões. As interações são temporárias e, depois da animação, o rosto retorna automaticamente à expressão associada ao estado atual do BLE.
 
 ## Expressões da tela TFT
 
