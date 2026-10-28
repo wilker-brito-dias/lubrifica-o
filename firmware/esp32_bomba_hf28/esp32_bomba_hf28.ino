@@ -295,7 +295,9 @@ class PumpSecurityCallbacks : public BLESecurityCallbacks {
     } else {
       Serial.printf("[BLE] Falha no pareamento (motivo %u).\n",
                     static_cast<unsigned>(result.fail_reason));
+      bleConnected = false;
       forcePumpOff("falha de autenticacao BLE");
+      setUiState(UI_DISCONNECTED);
     }
   }
 #endif
@@ -419,7 +421,7 @@ static void initBLE() {
   BLEDevice::init(BLE_DEVICE_NAME);
 
   // PIN estático de 6 dígitos + Secure Connections + MITM + bonding.
-  // setStaticPIN é a API disponível no Arduino-ESP32 3.0.x–3.3.x.
+  // A API antiga setStaticPIN é usada até o Core 3.3.0.
   BLESecurity security;
 #if ESP_ARDUINO_VERSION <= ESP_ARDUINO_VERSION_VAL(3, 3, 0)
   security.setStaticPIN(BLE_STATIC_PIN);
