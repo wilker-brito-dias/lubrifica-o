@@ -377,38 +377,75 @@ static bool probeI2C(uint8_t address) {
   return Wire.endTransmission() == 0;
 }
 
-static void initOLED() {
-  // Esta função não contém espera por hardware nem loop de tentativas.
-  if (!Wire.begin(OLED_SDA_PIN, OLED_SCL_PIN, 400000)) {
-    Serial.println("[OLED] Wire.begin falhou; continuando sem display.");
-    oledReady = false;
-    return;
+static bool initOLEDOnPins(uint8_t sdaPin, uint8_t sclPin) {
+  // Encerra a tentativa anterior para permitir mudar o barramento/pinos I2C.
+  Wire.end();
+  delay(2);
+
+  Serial.printf("[OLED] Testando I2C: SDA=GPIO%u, SCL=GPIO%u...\n",
+                sdaPin, sclPin);
+
+  if (!Wire.begin(sdaPin, sclPin, 100000)) {
+    Serial.println("[OLED] Wire.begin falhou neste par de pinos.");
+    return false;
   }
 
-  // Limita o tempo de espera caso o barramento I2C esteja travado.
+  // Evita espera longa caso o barramento esteja travado.
   Wire.setTimeOut(OLED_I2C_TIMEOUT_MS);
 
+  uint8_t foundAddress = 0;
   if (probeI2C(OLED_ADDR_1)) {
-    oledAddress = OLED_ADDR_1;
+    foundAddress = OLED_ADDR_1;
   } else if (probeI2C(OLED_ADDR_2)) {
-    oledAddress = OLED_ADDR_2;
-  } else {
-    Serial.println("[OLED] SSD1306 nao encontrado em 0x3C/0x3D; BLE segue ativo.");
-    oledReady = false;
-    return;
+    foundAddress = OLED_ADDR_2;
   }
 
-  // periphBegin=false porque Wire já foi inicializado nos pinos personalizados.
-  if (!oled.begin(SSD1306_SWITCHCAPVCC, oledAddress, true, false)) {
-    Serial.println("[OLED] Falha ao alocar/inicializar SSD1306; BLE segue ativo.");
-    oledReady = false;
-    return;
+  if (foundAddress == 0) {
+    Serial.println("[OLED] Nenhum SSD1306 respondeu em 0x3C ou 0x3D.");
+    return false;
   }
 
+  // periphBegin=false porque Wire já foi inicializado com os pinos encontrados.
+  if (!oled.begin(SSD1306_SWITCHCAPVCC, foundAddress, true, false)) {
+    Serial.println("[OLED] Dispositivo I2C respondeu, mas SSD1306.begin falhou.");
+    return false;
+  }
+
+  oledAddress = foundAddress;
   oledReady = true;
-  Serial.printf("[OLED] SSD1306 inicializado no endereco 0x%02X.\n", oledAddress);
+  Serial.printf("[OLED] SSD1306 encontrado: endereco 0x%02X, SDA=GPIO%u, SCL=GPIO%u.\n",
+                oledAddress, sdaPin, sclPin);
+  return true;
+}
 
-  // Pequena animação finita de boot; se falhar, não bloqueia o serviço BLE.
+static void initOLED() {
+  // Os modelos TTGO/LILYGO variam. Tentamos as pinagens comuns conhecidas:
+  // LoRa32 V1.2/V1.6/V2.x e T-Beam: SDA 21 / SCL 22.
+  // LoRa32 V1.0: SDA 4 / SCL 15.
+  // Última tentativa: pinos configurados originalmente no projeto, SDA 5 / SCL 4.
+  // Cada tentativa é finita; falhar no display nunca impede o BLE de funcionar.
+  static const uint8_t pinPairs[][2] = {
+    {21, 22},
+    {4, 15},
+    {OLED_SDA_PIN, OLED_SCL_PIN}
+  };
+
+  oledReady = false;
+
+  for (size_t i = 0; i < (sizeof(pinPairs) / sizeof(pinPairs[0])); ++i) {
+    if (initOLEDOnPins(pinPairs[i][0], pinPairs[i][1])) {
+      break;
+    }
+  }
+
+  if (!oledReady) {
+    Wire.end();
+    Serial.println("[OLED] SSD1306 nao encontrado nas pinagens testadas.");
+    Serial.println("[OLED] BLE segue ativo. Confirme o modelo e o tipo de display TTGO.");
+    return;
+  }
+
+  // Pequena animação finita de boot.
   for (uint8_t frame = 0; frame < 6; ++frame) {
     drawRobot(UI_BOOT, static_cast<uint32_t>(frame) * 85, millis());
     delay(70);
