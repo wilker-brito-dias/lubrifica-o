@@ -19,12 +19,16 @@ A implementação corresponde à versão em `docs/index.html`:
 | Sinal | ESP32 |
 |---|---:|
 | Entrada de comando do módulo de relé | GPIO 26 |
-| OLED SDA | GPIO 5 |
-| OLED SCL | GPIO 4 |
+| OLED I2C (pinagem detectada automaticamente) | GPIO 21/22, 4/15 ou 5/4 |
+| OLED endereço I2C | 0x3C ou 0x3D |
 | OLED alimentação | Conforme a placa/display |
 | OLED GND | GND comum conforme especificação do módulo |
 
 O relé foi solicitado como ativo em nível HIGH: GPIO 26 HIGH liga e LOW desliga. Confirme essa lógica no módulo real antes de ligar a bomba.
+
+O firmware agora testa automaticamente três pinagens I²C comuns em placas TTGO/LILYGO com SSD1306: SDA 21/SCL 22, SDA 4/SCL 15 e SDA 5/SCL 4. No Monitor Serial, procure a linha `[OLED] SSD1306 encontrado` para saber quais pinos e endereço foram detectados.
+
+**Atenção:** a TTGO T-Display usa normalmente uma tela TFT ST7789 por SPI, não SSD1306. Se o seu modelo for T-Display, este driver OLED não é compatível; será necessário adaptar a interface para TFT.
 
 ## Bibliotecas / compilação
 
