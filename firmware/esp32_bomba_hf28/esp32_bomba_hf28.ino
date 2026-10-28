@@ -107,6 +107,10 @@ struct UiSnapshot {
   uint32_t changedAt;
 };
 
+// Protótipo explícito: evita que o pré-processador do Arduino IDE gere
+// getUiSnapshot() antes da definição do tipo de retorno.
+static UiSnapshot getUiSnapshot();
+
 enum RobotInteraction : uint8_t {
   ROBOT_NORMAL = 0,
   ROBOT_ANGRY,
