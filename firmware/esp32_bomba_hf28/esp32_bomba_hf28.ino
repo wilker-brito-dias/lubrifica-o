@@ -483,11 +483,12 @@ void setup() {
   setUiState(UI_BOOT);
   Serial.println("\n[BOOT] Iniciando controlador da bomba HF-28.");
 
-  // A falha de OLED apenas desativa o desenho. Nunca há while esperando o display.
-  initOLED();
-
-  // Inicializa BLE independentemente do resultado de initOLED().
+  // Prioridade operacional: anunciar o BLE primeiro. Mesmo que o OLED trave,
+  // esteja ausente ou falhe na inicializacao, o servidor BLE ja estara ativo.
   initBLE();
+
+  // O display e acessorio; uma falha aqui nao impede o atendimento BLE.
+  initOLED();
 
   Serial.println("[BOOT] Sistema pronto.");
 }
