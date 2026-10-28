@@ -118,145 +118,267 @@ static const char* uiLabel(UiState state) {
   }
 }
 
+// Paleta fixa para manter a interface consistente e legível.
+static constexpr uint16_t BG_COLOR = 0x0000;          // preto
+static constexpr uint16_t FACE_COLOR = 0x0861;         // azul-marinho
+static constexpr uint16_t PANEL_COLOR = 0x10A3;        // painel azul escuro
+static constexpr uint16_t MUTED_COLOR = 0x7D9F;        // cinza azulado
+static constexpr uint16_t CYAN_COLOR = 0x07FF;
+static constexpr uint16_t GREEN_COLOR = 0x07E8;
+static constexpr uint16_t RED_COLOR = 0xF986;
+static constexpr uint16_t AMBER_COLOR = 0xFD20;
+
 static uint16_t color565(uint8_t r, uint8_t g, uint8_t b) {
   return tft.color565(r, g, b);
 }
 
-static void drawCenteredText(const char* text, int16_t y, uint16_t color) {
-  tft.setTextWrap(false);
-  int16_t x1=0,y1=0;
-  uint16_t w=0,h=0;
-  uint8_t scale=2;
-  tft.setTextSize(scale);
-  tft.getTextBounds(text,0,y,&x1,&y1,&w,&h);
-  if(w>230) {
-    scale=1;
-    tft.setTextSize(scale);
-    tft.getTextBounds(text,0,y,&x1,&y1,&w,&h);
+static uint16_t statusColor(UiState state) {
+  switch (state) {
+    case UI_BOOT:         return AMBER_COLOR;
+    case UI_WAITING:      return CYAN_COLOR;
+    case UI_CONNECTED:    return GREEN_COLOR;
+    case UI_PUMP_ON:      return GREEN_COLOR;
+    case UI_PUMP_OFF:     return MUTED_COLOR;
+    case UI_DISCONNECTED: return RED_COLOR;
+    default:              return ST77XX_WHITE;
   }
-  int16_t x=(static_cast<int16_t>(tft.width())-static_cast<int16_t>(w))/2;
-  if(x<0) x=0;
-  tft.setTextColor(color,ST77XX_BLACK);
-  tft.setCursor(x,y);
+}
+
+static void drawCenteredStatusText(const char* text, int16_t y, uint16_t color) {
+  tft.setTextWrap(false);
+
+  int16_t x1 = 0, y1 = 0;
+  uint16_t w = 0, h = 0;
+  uint8_t size = 2;
+  tft.setTextSize(size);
+  tft.getTextBounds(text, 0, y, &x1, &y1, &w, &h);
+
+  // Evita cortar os textos longos como "AGUARDANDO BLUETOOTH".
+  if (w > 190) {
+    size = 1;
+    tft.setTextSize(size);
+    tft.getTextBounds(text, 0, y, &x1, &y1, &w, &h);
+  }
+
+  int16_t x = (static_cast<int16_t>(tft.width()) - static_cast<int16_t>(w)) / 2;
+  if (x < 0) x = 0;
+  tft.setTextColor(color, PANEL_COLOR);
+  tft.setCursor(x, y);
   tft.print(text);
 }
 
-static void drawNeutralEye(int16_t cx,int8_t shift,bool blink,uint16_t eyeColor) {
-  if(blink) {
-    tft.drawLine(cx-20,51,cx+20,51,eyeColor);
-    tft.drawLine(cx-16,53,cx+16,53,eyeColor);
-    return;
-  }
-  tft.fillRoundRect(cx-21,36,42,30,9,eyeColor);
-  tft.fillCircle(cx+shift,51,7,ST77XX_BLACK);
-  tft.fillCircle(cx+shift-2,48,2,ST77XX_WHITE);
-}
+// Desenha apenas a área do rosto. Não limpa nem redesenha o ecrã inteiro.
+static void drawFaceExpression(UiState state, uint32_t elapsedMs, uint32_t nowMs) {
+  if (!tftReady) return;
 
-static void drawHappyEye(int16_t cx,uint16_t eyeColor) {
-  for(int16_t dx=-19;dx<=19;++dx) {
-    const int16_t y=42+((dx*dx)/24);
-    tft.drawPixel(cx+dx,y,eyeColor);
-    tft.drawPixel(cx+dx,y+1,eyeColor);
-    if(dx%3==0) tft.drawPixel(cx+dx,y+2,eyeColor);
-  }
-}
+  const uint16_t accent = statusColor(state);
+  const bool waitingBlink = (nowMs % 4700U) < 150U;
+  const bool normalBlink = (nowMs % 3900U) < 150U;
+  const int16_t leftEye = 80;
+  const int16_t rightEye = 160;
+  const int16_t eyeY = 51;
 
-static void drawFocusedEyes(uint16_t eyeColor) {
-  tft.drawLine(57,30,91,36,eyeColor);
-  tft.drawLine(149,36,183,30,eyeColor);
-  tft.fillRoundRect(62,38,37,27,7,eyeColor);
-  tft.fillRoundRect(141,38,37,27,7,eyeColor);
-  tft.fillCircle(81,52,7,ST77XX_BLACK);
-  tft.fillCircle(160,52,7,ST77XX_BLACK);
-  tft.fillCircle(79,49,2,ST77XX_WHITE);
-  tft.fillCircle(158,49,2,ST77XX_WHITE);
-}
+  // Apaga somente o interior da face. As molduras e a interface permanecem
+  // estáveis; isso elimina a piscada causada por fillScreen() a cada frame.
+  tft.fillRect(29, 27, 182, 59, FACE_COLOR);
 
-static void drawRestingEyes(uint16_t eyeColor) {
-  tft.drawLine(62,49,99,49,eyeColor);
-  tft.drawLine(141,49,178,49,eyeColor);
-  tft.drawLine(66,52,95,52,eyeColor);
-  tft.drawLine(145,52,174,52,eyeColor);
-}
+  // Pequenos detalhes laterais do rosto.
+  tft.drawPixel(43, 43, accent);
+  tft.drawPixel(197, 43, accent);
 
-static void drawSadEyes(uint16_t eyeColor) {
-  tft.drawLine(59,34,77,39,eyeColor);
-  tft.drawLine(81,39,98,34,eyeColor);
-  tft.drawLine(142,34,159,39,eyeColor);
-  tft.drawLine(163,39,181,34,eyeColor);
-  tft.fillRoundRect(63,40,34,25,7,eyeColor);
-  tft.fillRoundRect(143,40,34,25,7,eyeColor);
-  tft.fillCircle(82,51,6,ST77XX_BLACK);
-  tft.fillCircle(162,51,6,ST77XX_BLACK);
-  tft.fillTriangle(68,65,73,65,70,72,tft.color565(40,170,255));
-  tft.fillTriangle(168,65,173,65,170,72,tft.color565(40,170,255));
-}
-
-static uint16_t statusColor(UiState state) {
-  switch(state) {
-    case UI_BOOT: return tft.color565(255,190,55);
-    case UI_WAITING: return tft.color565(70,205,255);
-    case UI_CONNECTED: return tft.color565(70,235,150);
-    case UI_PUMP_ON: return tft.color565(70,235,150);
-    case UI_PUMP_OFF: return tft.color565(175,190,210);
-    case UI_DISCONNECTED: return tft.color565(255,90,100);
-    default: return ST77XX_WHITE;
-  }
-}
-
-static void drawRobot(UiState state,uint32_t elapsedMs,uint32_t nowMs) {
-  if(!tftReady) return;
-  const uint16_t accent=statusColor(state);
-  const uint16_t faceColor=tft.color565(8,24,40);
-  tft.fillScreen(ST77XX_BLACK);
-
-  tft.setTextWrap(false);
-  tft.setTextSize(1);
-  tft.setTextColor(tft.color565(115,150,175),ST77XX_BLACK);
-  tft.setCursor(8,4);
-  tft.print("LUBRIFICA-O / HF28");
-
-  tft.drawRoundRect(22,16,196,75,15,accent);
-  tft.fillRoundRect(24,18,192,71,13,faceColor);
-  tft.drawLine(120,18,120,11,accent);
-  tft.fillCircle(120,9,4,accent);
-
-  switch(state) {
+  switch (state) {
     case UI_BOOT: {
-      int16_t eyeHeight=3+static_cast<int16_t>(elapsedMs/14);
-      if(eyeHeight>30) eyeHeight=30;
-      const int16_t eyeY=51-(eyeHeight/2);
-      tft.fillRoundRect(62,eyeY,38,eyeHeight,8,ST77XX_CYAN);
-      tft.fillRoundRect(140,eyeY,38,eyeHeight,8,ST77XX_CYAN);
-      if(eyeHeight>=13) {
-        tft.fillCircle(81,51,6,ST77XX_BLACK);
-        tft.fillCircle(159,51,6,ST77XX_BLACK);
+      int16_t eyeHeight = 4 + static_cast<int16_t>(elapsedMs / 12U);
+      if (eyeHeight > 27) eyeHeight = 27;
+      const int16_t y = eyeY - eyeHeight / 2;
+
+      tft.fillRoundRect(leftEye - 21, y, 42, eyeHeight, 9, CYAN_COLOR);
+      tft.fillRoundRect(rightEye - 21, y, 42, eyeHeight, 9, CYAN_COLOR);
+      if (eyeHeight >= 13) {
+        tft.fillCircle(leftEye, eyeY, 6, BG_COLOR);
+        tft.fillCircle(rightEye, eyeY, 6, BG_COLOR);
+        tft.fillCircle(leftEye - 2, eyeY - 3, 2, ST77XX_WHITE);
+        tft.fillCircle(rightEye - 2, eyeY - 3, 2, ST77XX_WHITE);
       }
+      tft.drawLine(109, 77, 131, 77, accent);
       break;
     }
+
     case UI_WAITING: {
-      const uint8_t phase=static_cast<uint8_t>((nowMs/350)%4);
-      int8_t shift=0;
-      if(phase==0) shift=-5;
-      if(phase==2) shift=5;
-      const bool blink=(nowMs%4200)<150;
-      drawNeutralEye(81,shift,blink,ST77XX_CYAN);
-      drawNeutralEye(159,shift,blink,ST77XX_CYAN);
+      // O olhar procura alternando à esquerda, centro e direita; pisca raramente.
+      const uint8_t phase = static_cast<uint8_t>((nowMs / 350U) % 3U);
+      int8_t shift = 0;
+      if (phase == 0) shift = -5;
+      else if (phase == 2) shift = 5;
+
+      if (waitingBlink) {
+        tft.drawLine(leftEye - 20, eyeY, leftEye + 20, eyeY, CYAN_COLOR);
+        tft.drawLine(rightEye - 20, eyeY, rightEye + 20, eyeY, CYAN_COLOR);
+        tft.drawLine(leftEye - 15, eyeY + 2, leftEye + 15, eyeY + 2, CYAN_COLOR);
+        tft.drawLine(rightEye - 15, eyeY + 2, rightEye + 15, eyeY + 2, CYAN_COLOR);
+      } else {
+        for (int16_t cx : {leftEye, rightEye}) {
+          tft.fillRoundRect(cx - 21, 37, 42, 29, 9, CYAN_COLOR);
+          tft.fillRoundRect(cx - 16, 41, 32, 21, 7, BG_COLOR);
+          tft.fillCircle(cx + shift, eyeY, 7, color565(0, 165, 210));
+          tft.fillCircle(cx + shift - 2, eyeY - 3, 2, ST77XX_WHITE);
+          tft.drawPixel(cx + shift + 2, eyeY + 3, color565(90, 230, 255));
+        }
+      }
+      // Boca curiosa, com três pontos.
+      tft.fillCircle(114, 78, 2, accent);
+      tft.fillCircle(120, 78, 2, accent);
+      tft.fillCircle(126, 78, 2, accent);
       break;
     }
+
     case UI_CONNECTED:
-      drawHappyEye(81,tft.color565(70,235,150));
-      drawHappyEye(159,tft.color565(70,235,150));
-      tft.fillCircle(47,43,2,ST77XX_YELLOW);
-      tft.fillCircle(193,43,2,ST77XX_YELLOW);
+      if (normalBlink) {
+        tft.drawLine(leftEye - 19, 49, leftEye + 19, 49, GREEN_COLOR);
+        tft.drawLine(rightEye - 19, 49, rightEye + 19, 49, GREEN_COLOR);
+      } else {
+        // Olhos sorridentes com arco grosso e pontas arredondadas.
+        for (int16_t dx = -18; dx <= 18; ++dx) {
+          const int16_t y = 42 + ((dx * dx) / 23);
+          tft.drawLine(leftEye + dx, y, leftEye + dx, y + 2, GREEN_COLOR);
+          tft.drawLine(rightEye + dx, y, rightEye + dx, y + 2, GREEN_COLOR);
+        }
+      }
+      tft.drawPixel(51, 64, RED_COLOR);
+      tft.drawPixel(54, 66, RED_COLOR);
+      tft.drawPixel(186, 66, RED_COLOR);
+      tft.drawPixel(189, 64, RED_COLOR);
+      // Sorriso.
+      tft.drawLine(108, 74, 113, 79, GREEN_COLOR);
+      tft.drawLine(113, 79, 120, 81, GREEN_COLOR);
+      tft.drawLine(120, 81, 127, 79, GREEN_COLOR);
+      tft.drawLine(127, 79, 132, 74, GREEN_COLOR);
       break;
-    case UI_PUMP_ON: drawFocusedEyes(tft.color565(70,235,150)); break;
-    case UI_PUMP_OFF: drawRestingEyes(tft.color565(175,190,210)); break;
-    case UI_DISCONNECTED: drawSadEyes(tft.color565(255,90,100)); break;
+
+    case UI_PUMP_ON: {
+      // Expressão focada: sobrancelhas inclinadas, íris grandes e indicadores de ação.
+      const bool pulse = ((nowMs / 450U) % 2U) == 0U;
+      const uint16_t eyeColor = pulse ? GREEN_COLOR : color565(0, 185, 110);
+      tft.fillTriangle(55, 36, 97, 43, 95, 47, eyeColor);
+      tft.fillTriangle(185, 36, 143, 43, 145, 47, eyeColor);
+      for (int16_t cx : {leftEye, rightEye}) {
+        tft.fillRoundRect(cx - 19, 41, 38, 25, 7, eyeColor);
+        tft.fillCircle(cx, eyeY, 7, BG_COLOR);
+        tft.fillCircle(cx - 2, eyeY - 3, 2, ST77XX_WHITE);
+      }
+      // Boca de esforço e dois pequenos traços de energia.
+      tft.drawLine(110, 78, 130, 78, eyeColor);
+      tft.drawFastVLine(104, 72, 7, eyeColor);
+      tft.drawFastVLine(136, 72, 7, eyeColor);
+      break;
+    }
+
+    case UI_PUMP_OFF:
+      // Olhos descansando, com pálpebras superiores bem definidas.
+      tft.fillRoundRect(leftEye - 20, 39, 40, 25, 9, MUTED_COLOR);
+      tft.fillRoundRect(rightEye - 20, 39, 40, 25, 9, MUTED_COLOR);
+      tft.fillRect(leftEye - 19, 39, 38, 12, FACE_COLOR);
+      tft.fillRect(rightEye - 19, 39, 38, 12, FACE_COLOR);
+      tft.drawLine(leftEye - 18, 51, leftEye + 18, 51, ST77XX_WHITE);
+      tft.drawLine(rightEye - 18, 51, rightEye + 18, 51, ST77XX_WHITE);
+      tft.drawLine(112, 78, 128, 78, MUTED_COLOR);
+      break;
+
+    case UI_DISCONNECTED:
+      // Olhos tristes com sobrancelhas caídas e pequenas lágrimas.
+      tft.drawLine(58, 39, 76, 45, RED_COLOR);
+      tft.drawLine(84, 45, 98, 39, RED_COLOR);
+      tft.drawLine(142, 39, 156, 45, RED_COLOR);
+      tft.drawLine(164, 45, 182, 39, RED_COLOR);
+      tft.fillRoundRect(leftEye - 17, 44, 34, 21, 7, RED_COLOR);
+      tft.fillRoundRect(rightEye - 17, 44, 34, 21, 7, RED_COLOR);
+      tft.fillCircle(leftEye, 52, 6, BG_COLOR);
+      tft.fillCircle(rightEye, 52, 6, BG_COLOR);
+      tft.fillTriangle(64, 64, 70, 64, 67, 72, color565(40, 170, 255));
+      tft.fillTriangle(170, 64, 176, 64, 173, 72, color565(40, 170, 255));
+      // Boca triste.
+      tft.drawLine(109, 81, 114, 77, RED_COLOR);
+      tft.drawLine(114, 77, 126, 77, RED_COLOR);
+      tft.drawLine(126, 77, 131, 81, RED_COLOR);
+      break;
   }
 
-  tft.drawFastHLine(28,97,184,tft.color565(38,58,75));
-  drawCenteredText(uiLabel(state),108,accent);
+  // Mini LEDs e parafusos do painel do rosto.
+  tft.fillCircle(31, 32, 1, accent);
+  tft.fillCircle(209, 32, 1, accent);
+}
+
+static void drawStaticScreen(UiState state) {
+  if (!tftReady) return;
+
+  const uint16_t accent = statusColor(state);
+
+  // A tela inteira só é limpa quando muda o estado do sistema.
+  tft.fillScreen(BG_COLOR);
+
+  // Fundo técnico sutil, sem animação nem efeito estroboscópico.
+  tft.drawFastHLine(7, 16, 226, color565(24, 46, 62));
+  tft.drawFastHLine(7, 96, 226, color565(24, 46, 62));
+  tft.drawPixel(8, 8, accent);
+  tft.drawPixel(12, 8, accent);
+  tft.drawPixel(8, 12, accent);
+  tft.drawPixel(231, 8, accent);
+  tft.drawPixel(227, 8, accent);
+  tft.drawPixel(231, 12, accent);
+
+  // Cabeçalho com identidade do controlador.
+  tft.fillRoundRect(17, 3, 13, 10, 3, accent);
+  tft.fillCircle(23, 8, 2, BG_COLOR);
+  tft.setTextSize(1);
+  tft.setTextWrap(false);
+  tft.setTextColor(ST77XX_WHITE, BG_COLOR);
+  tft.setCursor(35, 5);
+  tft.print("LUBRIFICA-O");
+  tft.setTextColor(MUTED_COLOR, BG_COLOR);
+  tft.setCursor(167, 5);
+  tft.print("HF-28 / BLE");
+
+  // Corpo/visor com borda dupla, cantos e antena do robo.
+  tft.fillRoundRect(17, 20, 206, 72, 14, FACE_COLOR);
+  tft.drawRoundRect(15, 18, 210, 76, 15, accent);
+  tft.drawRoundRect(19, 22, 202, 68, 11, color565(38, 74, 91));
+  tft.drawLine(120, 18, 120, 13, accent);
+  tft.fillCircle(120, 11, 3, accent);
+  tft.fillCircle(120, 11, 1, ST77XX_WHITE);
+
+  // Rodapé de estado com indicador colorido e texto nítido.
+  tft.fillRoundRect(17, 101, 206, 25, 7, PANEL_COLOR);
+  tft.drawRoundRect(17, 101, 206, 25, 7, accent);
+  tft.fillCircle(28, 113, 3, accent);
+  tft.drawCircle(28, 113, 5, color565(35, 60, 77));
+  drawCenteredStatusText(uiLabel(state), 109, accent);
+
+  // Quatro segmentos decorativos na base, como indicador de energia.
+  const uint16_t dim = color565(28, 52, 69);
+  tft.fillRect(93, 130, 10, 2, dim);
+  tft.fillRect(106, 130, 10, 2, dim);
+  tft.fillRect(119, 130, 10, 2, dim);
+  tft.fillRect(132, 130, 10, 2, dim);
+}
+
+// Chave de animação: só atualiza os olhos quando algum detalhe mudou.
+static uint32_t faceAnimationKey(UiState state, uint32_t nowMs) {
+  switch (state) {
+    case UI_BOOT:
+      return nowMs / 80U;
+    case UI_WAITING:
+      return ((nowMs / 350U) << 1) | ((nowMs % 4700U) < 150U ? 1U : 0U);
+    case UI_CONNECTED:
+      return (nowMs % 3900U) < 150U ? 1U : 0U;
+    case UI_PUMP_ON:
+      return (((nowMs / 450U) % 2U) << 1) |
+             ((nowMs % 4200U) < 150U ? 1U : 0U);
+    case UI_PUMP_OFF:
+      return (nowMs % 5200U) < 150U ? 1U : 0U;
+    case UI_DISCONNECTED:
+    default:
+      return 0;
+  }
 }
 
 // --------------------------- Relay / failsafe -------------------------------
@@ -384,28 +506,25 @@ class PumpCharacteristicCallbacks : public BLECharacteristicCallbacks {
 // --------------------------- Inicialização do OLED --------------------------
 
 static void initTFT() {
-  // A TTGO T-Display tem TFT ST7789 por SPI, nao OLED I2C.
-  pinMode(TFT_BL_PIN,OUTPUT);
-  digitalWrite(TFT_BL_PIN,HIGH);  // Liga a iluminacao da tela.
+  pinMode(TFT_BL_PIN, OUTPUT);
+  digitalWrite(TFT_BL_PIN, HIGH);  // Liga a iluminação da tela.
 
-  // Display sem MISO: MOSI=19 e SCLK=18.
-  SPI.begin(TFT_SCLK_PIN,-1,TFT_MOSI_PIN,TFT_CS_PIN);
-
-  // Controlador nativo 135x240; rotacao 1 produz a interface 240x135.
-  tft.init(TFT_NATIVE_WIDTH,TFT_NATIVE_HEIGHT);
+  // SPI do display da TTGO T-Display.
+  SPI.begin(TFT_SCLK_PIN, -1, TFT_MOSI_PIN, TFT_CS_PIN);
+  tft.init(TFT_NATIVE_WIDTH, TFT_NATIVE_HEIGHT);
   tft.setRotation(1);
   tft.setTextWrap(false);
-  tft.fillScreen(ST77XX_BLACK);
-  tftReady=true;
 
-  Serial.printf("[TFT] TTGO T-Display ST7789 iniciado: %u x %u; MOSI=%u SCLK=%u CS=%u DC=%u RST=%u BL=%u.\n",
+  tftReady = true;
+  Serial.printf("[TFT] ST7789 iniciado: %u x %u; MOSI=%u SCLK=%u CS=%u DC=%u RST=%u BL=%u.\n",
                 static_cast<unsigned>(tft.width()),
                 static_cast<unsigned>(tft.height()),
-                TFT_MOSI_PIN,TFT_SCLK_PIN,TFT_CS_PIN,TFT_DC_PIN,TFT_RST_PIN,TFT_BL_PIN);
+                TFT_MOSI_PIN, TFT_SCLK_PIN, TFT_CS_PIN, TFT_DC_PIN,
+                TFT_RST_PIN, TFT_BL_PIN);
 
-  // Animacao curta; o BLE ja foi inicializado antes desta funcao.
-  for(uint8_t frame=0;frame<8;++frame) {
-    drawRobot(UI_BOOT,static_cast<uint32_t>(frame)*70,millis());
+  drawStaticScreen(UI_BOOT);
+  for (uint8_t frame = 0; frame < 5; ++frame) {
+    drawFaceExpression(UI_BOOT, static_cast<uint32_t>(frame) * 90U, millis());
     delay(70);
   }
 }
@@ -502,27 +621,35 @@ void setup() {
 void loop() {
   const uint32_t now = millis();
 
-  // Segunda camada de fail-safe: se o estado ficar inconsistente, OFF prevalece.
+  // Segunda camada de fail-safe: OFF prevalece se não houver cliente BLE.
   if (!bleConnected && relayActive) {
     forcePumpOff("verificacao de seguranca no loop");
   }
 
   if (tftReady) {
     UiSnapshot snapshot = getUiSnapshot();
-    static UiState lastDrawnState = static_cast<UiState>(255);
-    static uint32_t lastDrawAt = 0;
 
-    // Redesenha em pequenos intervalos para animar os olhos sem bloquear o BLE.
-    if (snapshot.state != lastDrawnState || (now - lastDrawAt) >= 90) {
-      drawRobot(snapshot.state, now - snapshot.changedAt, now);
+    static UiState lastDrawnState = static_cast<UiState>(255);
+    static uint32_t lastFaceKey = UINT32_MAX;
+
+    // Tela completa: somente no boot ou quando muda o estado da operação.
+    if (snapshot.state != lastDrawnState) {
+      drawStaticScreen(snapshot.state);
+      drawFaceExpression(snapshot.state, now - snapshot.changedAt, now);
       lastDrawnState = snapshot.state;
-      lastDrawAt = now;
+      lastFaceKey = faceAnimationKey(snapshot.state, now);
+    } else {
+      // Animação localizada: apenas o interior do rosto, nunca fillScreen().
+      const uint32_t key = faceAnimationKey(snapshot.state, now);
+      if (key != lastFaceKey) {
+        drawFaceExpression(snapshot.state, now - snapshot.changedAt, now);
+        lastFaceKey = key;
+      }
     }
 
-    // Após mostrar a perda de conexão por 3 s, volta à expressão de busca.
-    // O BLE continua anunciando durante todo esse tempo.
+    // Após 3 s, a expressão de perda de conexão retorna à busca BLE.
     if (snapshot.state == UI_DISCONNECTED &&
-        (now - snapshot.changedAt) >= 3000) {
+        (now - snapshot.changedAt) >= 3000U) {
       setUiState(UI_WAITING);
     }
   }
