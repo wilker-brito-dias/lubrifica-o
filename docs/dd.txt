@@ -1,3 +1,6 @@
 
 github_pat_11BLY4ZJI0ZJH24DPJhqCH_
 2lLlhANdN2Pe9M6mJtDMiO1jJMNwbAQMhJWLikfYe6oJ5VUBHS3xyKgw8jq
+
+
+na parte datela inicial começou a fugir um pouco a responsividade, trate de deixar tudo dentro da tela de modo que a leitura fique bem dinamica. na parte de historico a mesma coisa a tela ja esta começando a ter que se locomover para os lados para ver detalhese nao quero uma rolagem horizontal, apenas vertical, em relação ao historico é viavel termos os rtegistros contidos dentro de menus suspensos com relação as datas, por exemplo mês/dias, ao clicar no mes expande os disa e ao selecionar o dia já puxqa o historico do mesmo, ou do contrario vamos nos perder daqui um tempo com muita informação. se possivel crie uma logica de calendario mesmo  para escolher a datra desehjada. a parte do oleo poderia ser selecionavel na tela inicial, onde o que esta selecionado tambem é o que aparece no historico. para facilitar e não apenas adm poderem trocar o oleo que vai ser utilizado
