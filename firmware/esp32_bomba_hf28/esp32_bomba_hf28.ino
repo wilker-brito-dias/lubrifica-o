@@ -56,6 +56,14 @@ static constexpr uint32_t BLE_STATIC_PIN = 123456;
 Adafruit_ST7789 tft(&SPI, TFT_CS_PIN, TFT_DC_PIN, TFT_RST_PIN);
 static bool tftReady = false;
 
+// Buffer fora da tela: o rosto é composto em RAM e enviado em um único bloco SPI,
+// evitando o flash momentâneo que ocorre ao apagar e redesenhar cada olho no TFT.
+static constexpr int16_t FACE_AREA_X = 29;
+static constexpr int16_t FACE_AREA_Y = 27;
+static constexpr int16_t FACE_AREA_W = 182;
+static constexpr int16_t FACE_AREA_H = 59;
+GFXcanvas16 faceCanvas(FACE_AREA_W, FACE_AREA_H);
+
 // --------------------------- BLE identifiers -------------------------------
 
 static const char* BLE_DEVICE_NAME = "Bomba_HF28";
@@ -169,22 +177,21 @@ static void drawCenteredStatusText(const char* text, int16_t y, uint16_t color) 
 
 // Desenha apenas a área do rosto. Não limpa nem redesenha o ecrã inteiro.
 static void drawFaceExpression(UiState state, uint32_t elapsedMs, uint32_t nowMs) {
-  if (!tftReady) return;
+  if (!tftReady || faceCanvas.getBuffer() == nullptr) return;
 
   const uint16_t accent = statusColor(state);
   const bool waitingBlink = (nowMs % 4700U) < 150U;
   const bool normalBlink = (nowMs % 3900U) < 150U;
-  const int16_t leftEye = 80;
-  const int16_t rightEye = 160;
-  const int16_t eyeY = 51;
 
-  // Apaga somente o interior da face. As molduras e a interface permanecem
-  // estáveis; isso elimina a piscada causada por fillScreen() a cada frame.
-  tft.fillRect(29, 27, 182, 59, FACE_COLOR);
+  // Coordenadas locais do canvas (0,0 corresponde ao pixel TFT 29,27).
+  const int16_t leftEye = 51;
+  const int16_t rightEye = 131;
+  const int16_t eyeY = 24;
 
-  // Pequenos detalhes laterais do rosto.
-  tft.drawPixel(43, 43, accent);
-  tft.drawPixel(197, 43, accent);
+  // A composição ocorre toda em RAM; o TFT não é apagado durante o desenho.
+  faceCanvas.fillScreen(FACE_COLOR);
+  faceCanvas.drawPixel(14, 16, accent);
+  faceCanvas.drawPixel(168, 16, accent);
 
   switch (state) {
     case UI_BOOT: {
@@ -192,120 +199,114 @@ static void drawFaceExpression(UiState state, uint32_t elapsedMs, uint32_t nowMs
       if (eyeHeight > 27) eyeHeight = 27;
       const int16_t y = eyeY - eyeHeight / 2;
 
-      tft.fillRoundRect(leftEye - 21, y, 42, eyeHeight, 9, CYAN_COLOR);
-      tft.fillRoundRect(rightEye - 21, y, 42, eyeHeight, 9, CYAN_COLOR);
+      faceCanvas.fillRoundRect(leftEye - 21, y, 42, eyeHeight, 9, CYAN_COLOR);
+      faceCanvas.fillRoundRect(rightEye - 21, y, 42, eyeHeight, 9, CYAN_COLOR);
       if (eyeHeight >= 13) {
-        tft.fillCircle(leftEye, eyeY, 6, BG_COLOR);
-        tft.fillCircle(rightEye, eyeY, 6, BG_COLOR);
-        tft.fillCircle(leftEye - 2, eyeY - 3, 2, ST77XX_WHITE);
-        tft.fillCircle(rightEye - 2, eyeY - 3, 2, ST77XX_WHITE);
+        faceCanvas.fillCircle(leftEye, eyeY, 6, BG_COLOR);
+        faceCanvas.fillCircle(rightEye, eyeY, 6, BG_COLOR);
+        faceCanvas.fillCircle(leftEye - 2, eyeY - 3, 2, ST77XX_WHITE);
+        faceCanvas.fillCircle(rightEye - 2, eyeY - 3, 2, ST77XX_WHITE);
       }
-      tft.drawLine(109, 77, 131, 77, accent);
+      faceCanvas.drawLine(85, 50, 102, 50, accent);
       break;
     }
 
     case UI_WAITING: {
-      // O olhar procura alternando à esquerda, centro e direita; pisca raramente.
       const uint8_t phase = static_cast<uint8_t>((nowMs / 350U) % 3U);
       int8_t shift = 0;
       if (phase == 0) shift = -5;
       else if (phase == 2) shift = 5;
 
       if (waitingBlink) {
-        tft.drawLine(leftEye - 20, eyeY, leftEye + 20, eyeY, CYAN_COLOR);
-        tft.drawLine(rightEye - 20, eyeY, rightEye + 20, eyeY, CYAN_COLOR);
-        tft.drawLine(leftEye - 15, eyeY + 2, leftEye + 15, eyeY + 2, CYAN_COLOR);
-        tft.drawLine(rightEye - 15, eyeY + 2, rightEye + 15, eyeY + 2, CYAN_COLOR);
+        faceCanvas.drawLine(leftEye - 20, eyeY, leftEye + 20, eyeY, CYAN_COLOR);
+        faceCanvas.drawLine(rightEye - 20, eyeY, rightEye + 20, eyeY, CYAN_COLOR);
+        faceCanvas.drawLine(leftEye - 15, eyeY + 2, leftEye + 15, eyeY + 2, CYAN_COLOR);
+        faceCanvas.drawLine(rightEye - 15, eyeY + 2, rightEye + 15, eyeY + 2, CYAN_COLOR);
       } else {
         for (int16_t cx : {leftEye, rightEye}) {
-          tft.fillRoundRect(cx - 21, 37, 42, 29, 9, CYAN_COLOR);
-          tft.fillRoundRect(cx - 16, 41, 32, 21, 7, BG_COLOR);
-          tft.fillCircle(cx + shift, eyeY, 7, color565(0, 165, 210));
-          tft.fillCircle(cx + shift - 2, eyeY - 3, 2, ST77XX_WHITE);
-          tft.drawPixel(cx + shift + 2, eyeY + 3, color565(90, 230, 255));
+          faceCanvas.fillRoundRect(cx - 21, 10, 42, 29, 9, CYAN_COLOR);
+          faceCanvas.fillRoundRect(cx - 16, 14, 32, 21, 7, BG_COLOR);
+          faceCanvas.fillCircle(cx + shift, eyeY, 7, color565(0, 165, 210));
+          faceCanvas.fillCircle(cx + shift - 2, eyeY - 3, 2, ST77XX_WHITE);
+          faceCanvas.drawPixel(cx + shift + 2, eyeY + 3, color565(90, 230, 255));
         }
       }
-      // Boca curiosa, com três pontos.
-      tft.fillCircle(114, 78, 2, accent);
-      tft.fillCircle(120, 78, 2, accent);
-      tft.fillCircle(126, 78, 2, accent);
+      faceCanvas.fillCircle(85, 51, 2, accent);
+      faceCanvas.fillCircle(91, 51, 2, accent);
+      faceCanvas.fillCircle(97, 51, 2, accent);
       break;
     }
 
     case UI_CONNECTED:
       if (normalBlink) {
-        tft.drawLine(leftEye - 19, 49, leftEye + 19, 49, GREEN_COLOR);
-        tft.drawLine(rightEye - 19, 49, rightEye + 19, 49, GREEN_COLOR);
+        faceCanvas.drawLine(leftEye - 19, 22, leftEye + 19, 22, GREEN_COLOR);
+        faceCanvas.drawLine(rightEye - 19, 22, rightEye + 19, 22, GREEN_COLOR);
       } else {
-        // Olhos sorridentes com arco grosso e pontas arredondadas.
         for (int16_t dx = -18; dx <= 18; ++dx) {
-          const int16_t y = 42 + ((dx * dx) / 23);
-          tft.drawLine(leftEye + dx, y, leftEye + dx, y + 2, GREEN_COLOR);
-          tft.drawLine(rightEye + dx, y, rightEye + dx, y + 2, GREEN_COLOR);
+          const int16_t y = 15 + ((dx * dx) / 23);
+          faceCanvas.drawLine(leftEye + dx, y, leftEye + dx, y + 2, GREEN_COLOR);
+          faceCanvas.drawLine(rightEye + dx, y, rightEye + dx, y + 2, GREEN_COLOR);
         }
       }
-      tft.drawPixel(51, 64, RED_COLOR);
-      tft.drawPixel(54, 66, RED_COLOR);
-      tft.drawPixel(186, 66, RED_COLOR);
-      tft.drawPixel(189, 64, RED_COLOR);
-      // Sorriso.
-      tft.drawLine(108, 74, 113, 79, GREEN_COLOR);
-      tft.drawLine(113, 79, 120, 81, GREEN_COLOR);
-      tft.drawLine(120, 81, 127, 79, GREEN_COLOR);
-      tft.drawLine(127, 79, 132, 74, GREEN_COLOR);
+      faceCanvas.drawPixel(22, 37, RED_COLOR);
+      faceCanvas.drawPixel(25, 39, RED_COLOR);
+      faceCanvas.drawPixel(157, 39, RED_COLOR);
+      faceCanvas.drawPixel(160, 37, RED_COLOR);
+      faceCanvas.drawLine(79, 47, 84, 52, GREEN_COLOR);
+      faceCanvas.drawLine(84, 52, 91, 54, GREEN_COLOR);
+      faceCanvas.drawLine(91, 54, 98, 52, GREEN_COLOR);
+      faceCanvas.drawLine(98, 52, 103, 47, GREEN_COLOR);
       break;
 
     case UI_PUMP_ON: {
-      // Expressão focada: sobrancelhas inclinadas, íris grandes e indicadores de ação.
       const bool pulse = ((nowMs / 450U) % 2U) == 0U;
       const uint16_t eyeColor = pulse ? GREEN_COLOR : color565(0, 185, 110);
-      tft.fillTriangle(55, 36, 97, 43, 95, 47, eyeColor);
-      tft.fillTriangle(185, 36, 143, 43, 145, 47, eyeColor);
+      faceCanvas.fillTriangle(26, 9, 68, 16, 66, 20, eyeColor);
+      faceCanvas.fillTriangle(156, 9, 114, 16, 116, 20, eyeColor);
       for (int16_t cx : {leftEye, rightEye}) {
-        tft.fillRoundRect(cx - 19, 41, 38, 25, 7, eyeColor);
-        tft.fillCircle(cx, eyeY, 7, BG_COLOR);
-        tft.fillCircle(cx - 2, eyeY - 3, 2, ST77XX_WHITE);
+        faceCanvas.fillRoundRect(cx - 19, 14, 38, 25, 7, eyeColor);
+        faceCanvas.fillCircle(cx, eyeY, 7, BG_COLOR);
+        faceCanvas.fillCircle(cx - 2, eyeY - 3, 2, ST77XX_WHITE);
       }
-      // Boca de esforço e dois pequenos traços de energia.
-      tft.drawLine(110, 78, 130, 78, eyeColor);
-      tft.drawFastVLine(104, 72, 7, eyeColor);
-      tft.drawFastVLine(136, 72, 7, eyeColor);
+      faceCanvas.drawLine(81, 51, 101, 51, eyeColor);
+      faceCanvas.drawFastVLine(75, 45, 7, eyeColor);
+      faceCanvas.drawFastVLine(107, 45, 7, eyeColor);
       break;
     }
 
     case UI_PUMP_OFF:
-      // Olhos descansando, com pálpebras superiores bem definidas.
-      tft.fillRoundRect(leftEye - 20, 39, 40, 25, 9, MUTED_COLOR);
-      tft.fillRoundRect(rightEye - 20, 39, 40, 25, 9, MUTED_COLOR);
-      tft.fillRect(leftEye - 19, 39, 38, 12, FACE_COLOR);
-      tft.fillRect(rightEye - 19, 39, 38, 12, FACE_COLOR);
-      tft.drawLine(leftEye - 18, 51, leftEye + 18, 51, ST77XX_WHITE);
-      tft.drawLine(rightEye - 18, 51, rightEye + 18, 51, ST77XX_WHITE);
-      tft.drawLine(112, 78, 128, 78, MUTED_COLOR);
+      faceCanvas.fillRoundRect(leftEye - 20, 12, 40, 25, 9, MUTED_COLOR);
+      faceCanvas.fillRoundRect(rightEye - 20, 12, 40, 25, 9, MUTED_COLOR);
+      faceCanvas.fillRect(leftEye - 19, 12, 38, 12, FACE_COLOR);
+      faceCanvas.fillRect(rightEye - 19, 12, 38, 12, FACE_COLOR);
+      faceCanvas.drawLine(leftEye - 18, 24, leftEye + 18, 24, ST77XX_WHITE);
+      faceCanvas.drawLine(rightEye - 18, 24, rightEye + 18, 24, ST77XX_WHITE);
+      faceCanvas.drawLine(83, 51, 99, 51, MUTED_COLOR);
       break;
 
     case UI_DISCONNECTED:
-      // Olhos tristes com sobrancelhas caídas e pequenas lágrimas.
-      tft.drawLine(58, 39, 76, 45, RED_COLOR);
-      tft.drawLine(84, 45, 98, 39, RED_COLOR);
-      tft.drawLine(142, 39, 156, 45, RED_COLOR);
-      tft.drawLine(164, 45, 182, 39, RED_COLOR);
-      tft.fillRoundRect(leftEye - 17, 44, 34, 21, 7, RED_COLOR);
-      tft.fillRoundRect(rightEye - 17, 44, 34, 21, 7, RED_COLOR);
-      tft.fillCircle(leftEye, 52, 6, BG_COLOR);
-      tft.fillCircle(rightEye, 52, 6, BG_COLOR);
-      tft.fillTriangle(64, 64, 70, 64, 67, 72, color565(40, 170, 255));
-      tft.fillTriangle(170, 64, 176, 64, 173, 72, color565(40, 170, 255));
-      // Boca triste.
-      tft.drawLine(109, 81, 114, 77, RED_COLOR);
-      tft.drawLine(114, 77, 126, 77, RED_COLOR);
-      tft.drawLine(126, 77, 131, 81, RED_COLOR);
+      faceCanvas.drawLine(29, 12, 47, 18, RED_COLOR);
+      faceCanvas.drawLine(55, 18, 69, 12, RED_COLOR);
+      faceCanvas.drawLine(113, 12, 127, 18, RED_COLOR);
+      faceCanvas.drawLine(135, 18, 153, 12, RED_COLOR);
+      faceCanvas.fillRoundRect(leftEye - 17, 17, 34, 21, 7, RED_COLOR);
+      faceCanvas.fillRoundRect(rightEye - 17, 17, 34, 21, 7, RED_COLOR);
+      faceCanvas.fillCircle(leftEye, 25, 6, BG_COLOR);
+      faceCanvas.fillCircle(rightEye, 25, 6, BG_COLOR);
+      faceCanvas.fillTriangle(35, 37, 41, 37, 38, 45, color565(40, 170, 255));
+      faceCanvas.fillTriangle(141, 37, 147, 37, 144, 45, color565(40, 170, 255));
+      faceCanvas.drawLine(80, 54, 85, 50, RED_COLOR);
+      faceCanvas.drawLine(85, 50, 97, 50, RED_COLOR);
+      faceCanvas.drawLine(97, 50, 102, 54, RED_COLOR);
       break;
   }
 
-  // Mini LEDs e parafusos do painel do rosto.
-  tft.fillCircle(31, 32, 1, accent);
-  tft.fillCircle(209, 32, 1, accent);
+  faceCanvas.fillCircle(2, 5, 1, accent);
+  faceCanvas.fillCircle(180, 5, 1, accent);
+
+  // Transferência em bloco da imagem já composta: reduz bastante o cintilar.
+  tft.drawRGBBitmap(FACE_AREA_X, FACE_AREA_Y, faceCanvas.getBuffer(),
+                    FACE_AREA_W, FACE_AREA_H);
 }
 
 static void drawStaticScreen(UiState state) {
@@ -514,6 +515,12 @@ static void initTFT() {
   tft.init(TFT_NATIVE_WIDTH, TFT_NATIVE_HEIGHT);
   tft.setRotation(1);
   tft.setTextWrap(false);
+
+  if (faceCanvas.getBuffer() == nullptr) {
+    Serial.println("[TFT] Sem memoria para o buffer do rosto; mantendo o BLE ativo.");
+    tftReady = false;
+    return;
+  }
 
   tftReady = true;
   Serial.printf("[TFT] ST7789 iniciado: %u x %u; MOSI=%u SCLK=%u CS=%u DC=%u RST=%u BL=%u.\n",
