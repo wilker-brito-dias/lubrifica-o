@@ -18,6 +18,9 @@
  * IMPORTANTE:
  * - O relé começa em LOW e também é desligado em desconexão BLE.
  * - O display é acessório; o servidor BLE inicia antes da tela.
+ * - Botão BOOT (GPIO0): animação visual de raiva por alguns segundos.
+ * - Botão GPIO35: animação visual de dança por alguns segundos.
+ *   Botões são apenas interações com o personagem e nunca acionam o relé.
  * - Para uma instalação industrial, use intertravamento/parada de emergência
  *   independente do ESP32 e driver apropriado para a bobina/carga do relé.
  */
@@ -53,6 +56,14 @@ static constexpr uint16_t TFT_NATIVE_HEIGHT = 240;
 
 static constexpr uint32_t BLE_STATIC_PIN = 123456;
 
+// Botões internos da TTGO T-Display: BOOT=GPIO0 e botão de usuário=GPIO35.
+// Ambos são ativos em LOW. GPIO35 é input-only e usa o pull-up da própria placa.
+static constexpr uint8_t BUTTON_BOOT_PIN = 0;
+static constexpr uint8_t BUTTON_DANCE_PIN = 35;
+static constexpr uint32_t BUTTON_DEBOUNCE_MS = 35;
+static constexpr uint32_t ANGRY_DURATION_MS = 3800;
+static constexpr uint32_t DANCE_DURATION_MS = 7000;
+
 Adafruit_ST7789 tft(&SPI, TFT_CS_PIN, TFT_DC_PIN, TFT_RST_PIN);
 static bool tftReady = false;
 
@@ -87,6 +98,82 @@ enum UiState : uint8_t {
   UI_PUMP_OFF,
   UI_DISCONNECTED
 };
+
+enum RobotInteraction : uint8_t {
+  ROBOT_NORMAL = 0,
+  ROBOT_ANGRY,
+  ROBOT_DANCE
+};
+
+static RobotInteraction robotInteraction = ROBOT_NORMAL;
+static uint32_t interactionStartedAt = 0;
+
+struct ButtonDebouncer {
+  uint8_t pin;
+  bool rawState;
+  bool stableState;
+  uint32_t lastChangeAt;
+  bool initialized;
+};
+
+static ButtonDebouncer bootButton{BUTTON_BOOT_PIN, true, true, 0, false};
+static ButtonDebouncer danceButton{BUTTON_DANCE_PIN, true, true, 0, false};
+
+// Leitura sem delay: não bloqueia BLE nem o controle do relé.
+static bool buttonPressedEdge(ButtonDebouncer& button, uint32_t now) {
+  const bool raw = digitalRead(button.pin);
+  if (!button.initialized) {
+    button.rawState = raw;
+    button.stableState = raw;
+    button.lastChangeAt = now;
+    button.initialized = true;
+    return false;
+  }
+
+  if (raw != button.rawState) {
+    button.rawState = raw;
+    button.lastChangeAt = now;
+  }
+
+  if ((now - button.lastChangeAt) >= BUTTON_DEBOUNCE_MS &&
+      button.stableState != button.rawState) {
+    button.stableState = button.rawState;
+    return button.stableState == LOW; // dispara somente no pressionamento
+  }
+
+  return false;
+}
+
+static void initRobotButtons() {
+  pinMode(BUTTON_BOOT_PIN, INPUT_PULLUP);
+  // GPIO35 é somente entrada e não possui pull-up interno utilizável nesta placa.
+  pinMode(BUTTON_DANCE_PIN, INPUT);
+  const uint32_t now = millis();
+  bootButton = {BUTTON_BOOT_PIN, static_cast<bool>(digitalRead(BUTTON_BOOT_PIN)),
+                static_cast<bool>(digitalRead(BUTTON_BOOT_PIN)), now, true};
+  danceButton = {BUTTON_DANCE_PIN, static_cast<bool>(digitalRead(BUTTON_DANCE_PIN)),
+                 static_cast<bool>(digitalRead(BUTTON_DANCE_PIN)), now, true};
+}
+
+static void updateRobotInteractions(uint32_t now) {
+  // Interações visuais apenas: essas funções não tocam no relé nem no BLE.
+  if (buttonPressedEdge(bootButton, now)) {
+    robotInteraction = ROBOT_ANGRY;
+    interactionStartedAt = now;
+    Serial.println("[UI] Botao BOOT: robo bravo.");
+  } else if (buttonPressedEdge(danceButton, now)) {
+    robotInteraction = ROBOT_DANCE;
+    interactionStartedAt = now;
+    Serial.println("[UI] Botao GPIO35: robo dancando.");
+  }
+
+  const uint32_t duration =
+      (robotInteraction == ROBOT_ANGRY) ? ANGRY_DURATION_MS : DANCE_DURATION_MS;
+  if (robotInteraction != ROBOT_NORMAL &&
+      (now - interactionStartedAt) >= duration) {
+    robotInteraction = ROBOT_NORMAL;
+  }
+}
 
 struct UiSnapshot {
   UiState state;
@@ -176,7 +263,8 @@ static void drawCenteredStatusText(const char* text, int16_t y, uint16_t color) 
 }
 
 // Desenha apenas a área do rosto. Não limpa nem redesenha o ecrã inteiro.
-static void drawFaceExpression(UiState state, uint32_t elapsedMs, uint32_t nowMs) {
+static void drawFaceExpression(UiState state, RobotInteraction interaction,
+                               uint32_t elapsedMs, uint32_t nowMs) {
   if (!tftReady || faceCanvas.getBuffer() == nullptr) return;
 
   const uint16_t accent = statusColor(state);
@@ -193,8 +281,108 @@ static void drawFaceExpression(UiState state, uint32_t elapsedMs, uint32_t nowMs
   faceCanvas.drawPixel(14, 16, accent);
   faceCanvas.drawPixel(168, 16, accent);
 
-  switch (state) {
-    case UI_BOOT: {
+  if (interaction == ROBOT_ANGRY) {
+    // BRAVO: sobrancelhas inclinadas para dentro, olhos estreitos vermelhos,
+    // pupilas firmes, dentes serrilhados e vapor que pulsa nas laterais.
+    const uint8_t phase = static_cast<uint8_t>((nowMs / 115U) % 6U);
+    const int16_t shake = (phase == 1 || phase == 4) ? 2 : 0;
+    const uint16_t hot = (phase % 2U) ? color565(255, 55, 36) : RED_COLOR;
+
+    faceCanvas.fillTriangle(24 + shake, 6, 71, 15, 68, 21, hot);
+    faceCanvas.fillTriangle(158 - shake, 6, 111, 15, 114, 21, hot);
+
+    faceCanvas.fillRoundRect(leftEye - 21 + shake, 17, 42, 19, 6, hot);
+    faceCanvas.fillRoundRect(rightEye - 21 - shake, 17, 42, 19, 6, hot);
+    faceCanvas.fillRoundRect(leftEye - 15 + shake, 21, 30, 10, 4, BG_COLOR);
+    faceCanvas.fillRoundRect(rightEye - 15 - shake, 21, 30, 10, 4, BG_COLOR);
+    faceCanvas.fillCircle(leftEye + 4 + shake, 25, 5, color565(255, 185, 70));
+    faceCanvas.fillCircle(rightEye - 4 - shake, 25, 5, color565(255, 185, 70));
+    faceCanvas.fillCircle(leftEye + 4 + shake, 25, 2, BG_COLOR);
+    faceCanvas.fillCircle(rightEye - 4 - shake, 25, 2, BG_COLOR);
+
+    // Boca irritada com dentes alternando entre cerrados e rosnado.
+    if ((phase % 3U) == 0U) {
+      faceCanvas.fillRoundRect(75, 43, 32, 11, 3, hot);
+      faceCanvas.fillTriangle(78, 43, 85, 43, 82, 48, ST77XX_WHITE);
+      faceCanvas.fillTriangle(88, 43, 95, 43, 91, 48, ST77XX_WHITE);
+      faceCanvas.fillTriangle(99, 43, 105, 43, 102, 48, ST77XX_WHITE);
+    } else {
+      faceCanvas.drawLine(77, 46, 86, 50, hot);
+      faceCanvas.drawLine(86, 50, 96, 47, hot);
+      faceCanvas.drawLine(96, 47, 105, 50, hot);
+    }
+
+    // Marcas de raiva e vapor em movimento; sem escrever diretamente em pixels soltos no TFT.
+    faceCanvas.drawLine(18, 22, 25, 17, hot);
+    faceCanvas.drawLine(20, 27, 27, 23, hot);
+    faceCanvas.drawLine(157, 17, 164, 22, hot);
+    faceCanvas.drawLine(155, 23, 162, 27, hot);
+    if ((phase % 2U) == 0U) {
+      faceCanvas.drawCircle(12, 14, 4, AMBER_COLOR);
+      faceCanvas.drawCircle(169, 14, 4, AMBER_COLOR);
+      faceCanvas.drawPixel(8, 8, ST77XX_WHITE);
+      faceCanvas.drawPixel(173, 8, ST77XX_WHITE);
+    } else {
+      faceCanvas.drawCircle(15, 10, 3, AMBER_COLOR);
+      faceCanvas.drawCircle(166, 10, 3, AMBER_COLOR);
+    }
+  } else if (interaction == ROBOT_DANCE) {
+    // DANÇA: oito poses alternadas, olhos piscando, pupilas deslizando,
+    // boca cantando e notas musicais deslocadas a cada quadro.
+    const uint8_t phase = static_cast<uint8_t>((nowMs / 120U) % 8U);
+    const int8_t bob = (phase % 2U) ? 3 : -3;
+    const int8_t sway = (phase < 2U || phase >= 6U) ? -4 :
+                        (phase >= 3U && phase <= 4U) ? 4 : 0;
+    const uint16_t danceA = color565(60, 225, 255);
+    const uint16_t danceB = color565(255, 85, 210);
+    const uint16_t danceC = color565(255, 210, 70);
+
+    // Pálpebras coloridas e pupilas com brilho.
+    if (phase == 1U || phase == 5U) {
+      faceCanvas.fillRoundRect(leftEye - 21, 18 + bob, 42, 17, 7, danceA);
+      faceCanvas.drawLine(rightEye - 19, 22 - bob, rightEye + 19, 22 - bob, danceB);
+      faceCanvas.drawLine(rightEye - 15, 24 - bob, rightEye + 15, 24 - bob, danceB);
+    } else if (phase == 3U || phase == 7U) {
+      faceCanvas.drawLine(leftEye - 19, 22 - bob, leftEye + 19, 22 - bob, danceA);
+      faceCanvas.drawLine(leftEye - 15, 24 - bob, leftEye + 15, 24 - bob, danceA);
+      faceCanvas.fillRoundRect(rightEye - 21, 18 + bob, 42, 17, 7, danceB);
+    } else {
+      faceCanvas.fillRoundRect(leftEye - 21 + sway, 11 + bob, 42, 30, 10, danceA);
+      faceCanvas.fillRoundRect(rightEye - 21 - sway, 11 - bob, 42, 30, 10, danceB);
+      faceCanvas.fillRoundRect(leftEye - 15 + sway, 15 + bob, 30, 22, 7, BG_COLOR);
+      faceCanvas.fillRoundRect(rightEye - 15 - sway, 15 - bob, 30, 22, 7, BG_COLOR);
+      faceCanvas.fillCircle(leftEye + sway + ((phase % 3U) - 1) * 3, 25 + bob, 6, color565(0, 145, 190));
+      faceCanvas.fillCircle(rightEye - sway + ((phase % 3U) - 1) * 3, 25 - bob, 6, color565(145, 35, 145));
+      faceCanvas.fillCircle(leftEye + sway - 2, 22 + bob, 2, ST77XX_WHITE);
+      faceCanvas.fillCircle(rightEye - sway - 2, 22 - bob, 2, ST77XX_WHITE);
+    }
+
+    // Boca muda entre sorriso e canto de boca aberta.
+    if ((phase % 2U) == 0U) {
+      faceCanvas.fillRoundRect(78, 43 - bob, 27, 11 + bob, 5, danceB);
+      faceCanvas.fillRoundRect(83, 44 - bob, 17, 4, 2, BG_COLOR);
+    } else {
+      faceCanvas.drawLine(77, 45 + bob, 85, 51 + bob, danceA);
+      faceCanvas.drawLine(85, 51 + bob, 94, 53 + bob, danceA);
+      faceCanvas.drawLine(94, 53 + bob, 103, 51 + bob, danceA);
+      faceCanvas.drawLine(103, 51 + bob, 111, 45 + bob, danceA);
+    }
+
+    // Notas musicais saltando entre os cantos, mais pequenos brilhos de festa.
+    const int16_t noteY = (phase % 2U) ? 8 : 13;
+    const int16_t leftNoteX = 8 + static_cast<int16_t>((phase % 4U) * 3U);
+    const int16_t rightNoteX = 161 - static_cast<int16_t>((phase % 4U) * 3U);
+    faceCanvas.fillCircle(leftNoteX, noteY + 15, 3, danceC);
+    faceCanvas.drawLine(leftNoteX + 2, noteY + 13, leftNoteX + 2, noteY, danceC);
+    faceCanvas.drawLine(leftNoteX + 2, noteY, leftNoteX + 8, noteY + 2, danceC);
+    faceCanvas.fillCircle(rightNoteX, noteY + 15, 3, danceB);
+    faceCanvas.drawLine(rightNoteX + 2, noteY + 13, rightNoteX + 2, noteY, danceB);
+    faceCanvas.drawLine(rightNoteX + 2, noteY, rightNoteX + 8, noteY + 2, danceB);
+    faceCanvas.drawPixel(25, 49, ST77XX_WHITE);
+    faceCanvas.drawPixel(154, 48, ST77XX_WHITE);
+  } else {
+    switch (state) {
+      case UI_BOOT: {
       int16_t eyeHeight = 4 + static_cast<int16_t>(elapsedMs / 12U);
       if (eyeHeight > 27) eyeHeight = 27;
       const int16_t y = eyeY - eyeHeight / 2;
@@ -299,6 +487,7 @@ static void drawFaceExpression(UiState state, uint32_t elapsedMs, uint32_t nowMs
       faceCanvas.drawLine(85, 50, 97, 50, RED_COLOR);
       faceCanvas.drawLine(97, 50, 102, 54, RED_COLOR);
       break;
+    }
   }
 
   faceCanvas.fillCircle(2, 5, 1, accent);
@@ -309,10 +498,12 @@ static void drawFaceExpression(UiState state, uint32_t elapsedMs, uint32_t nowMs
                     FACE_AREA_W, FACE_AREA_H);
 }
 
-static void drawStaticScreen(UiState state) {
+static void drawStaticScreen(UiState state, RobotInteraction interaction) {
   if (!tftReady) return;
 
-  const uint16_t accent = statusColor(state);
+  const uint16_t accent = (interaction == ROBOT_ANGRY) ? RED_COLOR :
+                          (interaction == ROBOT_DANCE) ? color565(255, 90, 220) :
+                          statusColor(state);
 
   // A tela inteira só é limpa quando muda o estado do sistema.
   tft.fillScreen(BG_COLOR);
@@ -335,9 +526,13 @@ static void drawStaticScreen(UiState state) {
   tft.setTextColor(ST77XX_WHITE, BG_COLOR);
   tft.setCursor(35, 5);
   tft.print("LUBRIFICA-O");
-  tft.setTextColor(MUTED_COLOR, BG_COLOR);
+  tft.setTextColor(interaction == ROBOT_ANGRY ? RED_COLOR :
+                   interaction == ROBOT_DANCE ? color565(255, 90, 220) :
+                   MUTED_COLOR, BG_COLOR);
   tft.setCursor(167, 5);
-  tft.print("HF-28 / BLE");
+  if (interaction == ROBOT_ANGRY) tft.print("BRAVO!");
+  else if (interaction == ROBOT_DANCE) tft.print("DANCA!");
+  else tft.print("HF-28 / BLE");
 
   // Corpo/visor com borda dupla, cantos e antena do robo.
   tft.fillRoundRect(17, 20, 206, 72, 14, FACE_COLOR);
@@ -363,7 +558,9 @@ static void drawStaticScreen(UiState state) {
 }
 
 // Chave de animação: só atualiza os olhos quando algum detalhe mudou.
-static uint32_t faceAnimationKey(UiState state, uint32_t nowMs) {
+static uint32_t faceAnimationKey(UiState state, RobotInteraction interaction, uint32_t nowMs) {
+  if (interaction == ROBOT_ANGRY) return nowMs / 115U;
+  if (interaction == ROBOT_DANCE) return nowMs / 120U;
   switch (state) {
     case UI_BOOT:
       return nowMs / 80U;
@@ -614,6 +811,7 @@ void setup() {
   relayActive = false;
 
   setUiState(UI_BOOT);
+  initRobotButtons();
   Serial.println("\n[BOOT] Iniciando controlador da bomba HF-28.");
 
   // Prioridade operacional: anunciar o BLE primeiro, antes de inicializar a tela TFT.
@@ -628,7 +826,10 @@ void setup() {
 void loop() {
   const uint32_t now = millis();
 
-  // Segunda camada de fail-safe: OFF prevalece se não houver cliente BLE.
+  // Botões alteram somente as expressões do robô; não acionam a bomba.
+  updateRobotInteractions(now);
+
+  // Segunda camada de fail-safe mantida intacta.
   if (!bleConnected && relayActive) {
     forcePumpOff("verificacao de seguranca no loop");
   }
@@ -637,24 +838,31 @@ void loop() {
     UiSnapshot snapshot = getUiSnapshot();
 
     static UiState lastDrawnState = static_cast<UiState>(255);
+    static RobotInteraction lastDrawnInteraction = static_cast<RobotInteraction>(255);
     static uint32_t lastFaceKey = UINT32_MAX;
 
-    // Tela completa: somente no boot ou quando muda o estado da operação.
-    if (snapshot.state != lastDrawnState) {
-      drawStaticScreen(snapshot.state);
-      drawFaceExpression(snapshot.state, now - snapshot.changedAt, now);
+    const bool layoutChanged =
+        (snapshot.state != lastDrawnState) ||
+        (robotInteraction != lastDrawnInteraction);
+
+    if (layoutChanged) {
+      drawStaticScreen(snapshot.state, robotInteraction);
+      drawFaceExpression(snapshot.state, robotInteraction,
+                         now - snapshot.changedAt, now);
       lastDrawnState = snapshot.state;
-      lastFaceKey = faceAnimationKey(snapshot.state, now);
+      lastDrawnInteraction = robotInteraction;
+      lastFaceKey = faceAnimationKey(snapshot.state, robotInteraction, now);
     } else {
-      // Animação localizada: apenas o interior do rosto, nunca fillScreen().
-      const uint32_t key = faceAnimationKey(snapshot.state, now);
+      // Atualiza o rosto em buffer RAM; o resto da tela fica estático.
+      const uint32_t key = faceAnimationKey(snapshot.state, robotInteraction, now);
       if (key != lastFaceKey) {
-        drawFaceExpression(snapshot.state, now - snapshot.changedAt, now);
+        drawFaceExpression(snapshot.state, robotInteraction,
+                           now - interactionStartedAt, now);
         lastFaceKey = key;
       }
     }
 
-    // Após 3 s, a expressão de perda de conexão retorna à busca BLE.
+    // Após 3 s, a expressão de perda de conexão retorna à busca.
     if (snapshot.state == UI_DISCONNECTED &&
         (now - snapshot.changedAt) >= 3000U) {
       setUiState(UI_WAITING);
