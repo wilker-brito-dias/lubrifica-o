@@ -26,6 +26,7 @@
  */
 
 #include <Arduino.h>
+#include <initializer_list>
 #include <esp_arduino_version.h>
 #include <SPI.h>
 #include <Adafruit_GFX.h>
