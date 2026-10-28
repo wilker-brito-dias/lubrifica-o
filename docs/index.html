@@ -11,130 +11,196 @@
 <style>
 :root{--bg:#0c141d;--ink:#e8eef5;--mut:#8ea0b3;--acc:#f5a524;--ok:#3ddc97;--bad:#ff6b6b;--ble:#2b80ff;--line:rgba(255,255,255,.13);color-scheme:dark}
 *{box-sizing:border-box}
-html,body{margin:0}
-body{background:radial-gradient(900px 520px at 85% -10%,#21405f 0,transparent 62%),radial-gradient(700px 420px at -10% 110%,#3a2a10 0,transparent 60%),var(--bg);background-attachment:fixed;color:var(--ink);font:17px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;min-height:100vh;padding:env(safe-area-inset-top) 16px calc(88px + env(safe-area-inset-bottom))}
-#main{max-width:720px;margin:0 auto;display:grid;gap:16px;padding-top:16px}
-h1{font-size:1.7rem;line-height:1.2;margin:.2em 0 .3em;letter-spacing:-.01em}
+html,body{margin:0;max-width:100%}
+html{-webkit-text-size-adjust:100%}
+body{background:radial-gradient(900px 520px at 85% -10%,#21405f 0,transparent 62%),radial-gradient(700px 420px at -10% 110%,#3a2a10 0,transparent 60%),var(--bg);background-attachment:fixed;color:var(--ink);font:17px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;min-height:100vh;min-height:100dvh;overflow-x:hidden;padding:env(safe-area-inset-top) clamp(10px,3vw,16px) calc(88px + env(safe-area-inset-bottom))}
+#main{width:100%;max-width:720px;margin:0 auto;display:grid;gap:clamp(10px,2.5vw,16px);padding-top:clamp(8px,2.5vw,16px)}
+#main>*,.g>*{min-width:0}
+h1,h2,h3,p,b,span,label,button{overflow-wrap:anywhere}
+h1{font-size:clamp(1.3rem,5.4vw,1.7rem);line-height:1.2;margin:.2em 0 .3em;letter-spacing:-.01em}
 h2{font-size:1.15rem;margin:0 0 .6em}
 p{margin:.3em 0}
 .m{color:var(--mut)}
-.g{background:rgba(255,255,255,.06);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);border:1px solid var(--line);border-radius:20px;padding:22px}
+.g{background:rgba(255,255,255,.06);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);border:1px solid var(--line);border-radius:20px;padding:clamp(14px,4vw,22px)}
 .c{text-align:center}
-.steps{display:flex;gap:8px}
-.steps span{flex:1;text-align:center;padding:8px 4px;border-radius:12px;font-size:.9rem;color:var(--mut);border:1px solid var(--line);background:rgba(255,255,255,.03)}
+.steps{display:flex;gap:clamp(4px,1.5vw,8px)}
+.steps span{flex:1 1 0;min-width:0;text-align:center;padding:8px 2px;line-height:1.15;border-radius:12px;font-size:clamp(.66rem,2.7vw,.9rem);color:var(--mut);border:1px solid var(--line);background:rgba(255,255,255,.03)}
 .steps .cur{color:#1b1200;background:var(--acc);border-color:var(--acc);font-weight:700}
 .steps .done{color:var(--ok);border-color:rgba(61,220,151,.45)}
-.ring{width:150px;height:150px;margin:10px auto 18px;border-radius:50%;border:2px solid var(--mut);display:grid;place-items:center;position:relative;font-size:1.6rem;color:var(--mut)}
+.ring{width:clamp(110px,34vw,150px);height:clamp(110px,34vw,150px);margin:10px auto 18px;border-radius:50%;border:2px solid var(--mut);display:grid;place-items:center;position:relative;font-size:1.6rem;color:var(--mut)}
 .ring.on{border-color:var(--acc);color:var(--acc)}
 .ring.on::after{content:"";position:absolute;inset:-2px;border-radius:50%;border:2px solid var(--acc);animation:p 1.8s ease-out infinite}
 @keyframes p{from{transform:scale(1);opacity:.8}to{transform:scale(1.5);opacity:0}}
 @media (prefers-reduced-motion:reduce){.ring.on::after{animation:none}}
-.who{font-size:1.9rem;font-weight:700;margin:0 0 .5em}
-.tm{font-size:3.4rem;font-weight:700;font-variant-numeric:tabular-nums;color:var(--acc);margin:.2em 0 .5em}
-.b{display:block;width:100%;min-height:58px;margin-top:12px;padding:14px 18px;font:inherit;font-weight:600;color:var(--ink);background:rgba(255,255,255,.08);border:1px solid var(--line);border-radius:16px;cursor:pointer}
+.who{font-size:clamp(1.3rem,6.4vw,1.9rem);font-weight:700;margin:0 0 .5em}
+.tm{font-size:clamp(2.4rem,13vw,3.4rem);font-weight:700;font-variant-numeric:tabular-nums;color:var(--acc);margin:.2em 0 .5em}
+.b{display:block;width:100%;min-height:58px;margin-top:12px;padding:12px clamp(10px,3vw,18px);font:inherit;font-weight:600;color:var(--ink);background:rgba(255,255,255,.08);border:1px solid var(--line);border-radius:16px;cursor:pointer}
 .b.p{background:var(--acc);border-color:var(--acc);color:#1b1200}
 .b.ble{background:var(--ble);border-color:var(--ble);color:#fff}
-.b:disabled{opacity: 0.5; pointer-events: none;}
-.b:focus-visible,input:focus-visible,#nav button:focus-visible{outline:3px solid #7cc4ff;outline-offset:2px}
+.b.big{min-height:clamp(76px,16vh,100px);font-size:clamp(1rem,4.4vw,1.3rem);line-height:1.2}
+.b:disabled{opacity:.5;pointer-events:none}
+.b:focus-visible,input:focus-visible,#nav button:focus-visible,.esp-card:focus-visible{outline:3px solid #7cc4ff;outline-offset:2px}
 .b.d{color:var(--bad);border-color:rgba(255,107,107,.5)}
 .b.r{background:var(--bad);border-color:var(--bad);color:#fff}
-.row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.row{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,150px),1fr));gap:12px}
 label{display:block;margin-top:16px;color:var(--mut);font-size:.95rem}
-input{display:block;width:100%;margin-top:6px;padding:14px;font:inherit;color:var(--ink);background:rgba(0,0,0,.3);border:1px solid var(--line);border-radius:14px}
-#lt{font-size:2rem;font-weight:700}
+input{display:block;width:100%;max-width:100%;min-width:0;margin-top:6px;padding:14px;font:inherit;color:var(--ink);background:rgba(0,0,0,.3);border:1px solid var(--line);border-radius:14px}
+#lt{font-size:clamp(1.5rem,7vw,2rem);font-weight:700}
 #pv{width:100%;max-height:260px;object-fit:contain;margin-top:10px;border-radius:14px}
-.ls{list-style:none;margin:14px 0 0;padding:0}
-.ls li{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 0;border-top:1px solid var(--line)}
-.ls span,.ls small{display:block}
-.lt{text-align:right;font-weight:700;white-space:nowrap}
 .ok{color:var(--ok)}
-.x{background:none;border:1px solid var(--line);color:var(--bad);border-radius:10px;padding:8px 12px;font:inherit}
 .warn{padding:12px 14px;border-radius:14px;background:rgba(255,107,107,.12);border:1px solid rgba(255,107,107,.4);color:#ffb3b3}
-#nav{position:fixed;left:0;right:0;bottom:0;display:flex;gap:10px;padding:10px 16px calc(10px + env(safe-area-inset-bottom));background:rgba(12,20,29,.85);-webkit-backdrop-filter:blur(16px);backdrop-filter:blur(16px);border-top:1px solid var(--line)}
-#nav button{flex:1;min-height:56px;font:inherit;font-weight:600;color:var(--mut);background:none;border:1px solid transparent;border-radius:16px}
+#nav{position:fixed;left:0;right:0;bottom:0;display:flex;gap:clamp(6px,2vw,10px);padding:10px clamp(8px,3vw,16px) calc(10px + env(safe-area-inset-bottom));background:rgba(12,20,29,.85);-webkit-backdrop-filter:blur(16px);backdrop-filter:blur(16px);border-top:1px solid var(--line)}
+#nav button{flex:1;min-width:0;min-height:56px;font:inherit;font-size:clamp(.8rem,3.3vw,1rem);font-weight:600;color:var(--mut);background:none;border:1px solid transparent;border-radius:16px}
 #nav button.on{color:var(--acc);border-color:var(--acc);background:rgba(245,165,36,.1)}
-#toast{position:fixed;left:16px;right:16px;bottom:calc(92px + env(safe-area-inset-bottom));max-width:560px;margin:0 auto;padding:14px 18px;border-radius:14px;background:#12382b;border:1px solid var(--ok);opacity:0;pointer-events:none;transition:opacity .2s;z-index:999;}
+#toast{position:fixed;left:16px;right:16px;bottom:calc(92px + env(safe-area-inset-bottom));max-width:560px;margin:0 auto;padding:14px 18px;border-radius:14px;background:#12382b;border:1px solid var(--ok);opacity:0;pointer-events:none;transition:opacity .2s;z-index:999}
 #toast.bad{background:#3a1717;border-color:var(--bad)}
 #toast.show{opacity:1}
-/* ESP32 Status UI */
-.esp-card {display: flex; align-items: center; justify-content: space-between; padding: 16px; background: rgba(0,0,0,0.4); border-radius: 16px; border: 1px solid var(--line); margin-bottom: 16px;}
-.esp-icon {width: 50px; height: 50px; border-radius: 12px; background: var(--line); display: grid; place-items: center; font-size: 1.5rem;}
-.esp-icon.on {background: var(--ok); color: #000;}
-.esp-info h3 {margin: 0 0 4px; font-size: 1.1rem;}
-.esp-info p {margin: 0; font-size: 0.85rem;}
-.esp-status-off {color: var(--bad);}
-.esp-status-on {color: var(--ok); font-weight: bold;}
+.esp-card{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;text-align:left;font:inherit;color:inherit;cursor:pointer;padding:clamp(10px,3vw,16px);background:rgba(0,0,0,.4);border-radius:16px;border:1px solid var(--line)}
+.esp-icon{flex:none;width:clamp(40px,11vw,50px);height:clamp(40px,11vw,50px);border-radius:12px;background:var(--line);display:grid;place-items:center;font-size:1.5rem}
+.esp-icon.on{background:var(--ok);color:#000}
+.esp-info{flex:1}
+.esp-info h3{margin:0 0 4px;font-size:1.1rem}
+.esp-info p{margin:0;font-size:.85rem}
+.esp-status-off{color:var(--bad)}
+.esp-status-on{color:var(--ok);font-weight:700}
+select{display:block;width:100%;max-width:100%;min-width:0;margin-top:6px;padding:14px;font:inherit;color:var(--ink);background:rgba(0,0,0,.3);border:1px solid var(--line);border-radius:14px}
+select:focus-visible{outline:3px solid #7cc4ff;outline-offset:2px}
+img{max-width:100%}
+@media (max-height:520px){.ring{display:none}.b.big{min-height:64px}.tm{margin:.1em 0 .3em}}
 </style>
 </head>
 <body>
 <div id="main"></div>
-<nav id="nav"><button data-t="a" onclick="go('a')">Abastecer</button><button data-t="h" onclick="location.href='historico.html'">Histórico</button><button data-t="c" onclick="go('c')">Ajustes</button></nav>
+<nav id="nav"><button data-t="a" onclick="go('a')">Abastecer</button><button data-t="h" onclick="nav('historico.html')">Histórico</button><button data-t="c" onclick="go('c')">Ajustes</button></nav>
 <div id="toast" role="status"></div>
 <script src="gh.js"></script>
 <script>
 const $=s=>document.querySelector(s);
-const S={step:0,w:null,m:null,t0:null,photo:null,nfc:false,tab:'a'};
+const S={step:0,w:null,m:null,t0:null,t1:null,pump:null,manual:false,ol:null,auto:null,dur:null,miss:0,busy:false,cutting:false,keeping:false,photo:null,nfc:false,tab:'a'};
 const reg=JSON.parse(localStorage.getItem('reg')||'{"w":{},"m":{}}');
 const saveReg=()=>localStorage.setItem('reg',JSON.stringify(reg));
 const p2=n=>String(n).padStart(2,'0');
 const hk=d=>d.getFullYear()+'-'+p2(d.getMonth()+1)+'-'+p2(d.getDate())+'_'+p2(d.getHours())+'h';
-const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt=n=>String(n).replace('.',',');
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const isAdmin=()=>sessionStorage.getItem('auth')==='1';
+const okId=id=>typeof id==='string'&&id.length>0&&id.length<=200&&id!=='__proto__';
+const lookup=(k,id)=>okId(id)&&Object.hasOwn(reg[k],id)?reg[k][id]:null;
+const pumpBusy=()=>S.pump==='on'||S.pump==='fail'||S.pump==='starting';
 function toast(t,bad){const e=$('#toast');e.textContent=t;e.className='show'+(bad?' bad':'');clearTimeout(toast.k);toast.k=setTimeout(()=>e.className='',4000)}
 
-/* ------------------- BLUETOOTH BLE ESP32 ------------------- */
-const BLE = {
-  device: null,
-  characteristic: null,
-  serviceUuid: "0000aaaa-0000-1000-8000-00805f9b34fb",
-  charUuid: "0000bbbb-0000-1000-8000-00805f9b34fb",
-  
-  async connect() {
-    if (!navigator.bluetooth) {
-      toast("Bluetooth não suportado neste navegador.", 1); return;
-    }
-    try {
-      toast("Buscando ESP32...");
-      this.device = await navigator.bluetooth.requestDevice({
-        filters: [{ namePrefix: "Bomba" }, { services: [this.serviceUuid] }],
-        optionalServices: [this.serviceUuid]
-      });
-      
-      this.device.addEventListener('gattserverdisconnected', () => {
-        BLE.characteristic = null;
-        render();
-        toast("ESP32 Desconectado!", 1);
-      });
-
-      const server = await this.device.gatt.connect();
-      const service = await server.getPrimaryService(this.serviceUuid);
-      this.characteristic = await service.getCharacteristic(this.charUuid);
-      
-      toast("ESP32 Conectado com sucesso!");
-      render();
-    } catch (e) {
-      toast("Falha na conexão: " + e.message, 1);
-    }
+/* ---------- Bomba (ESP8266 por Wi-Fi) ---------- */
+const PUMP={
+  up:null,nonce:null,
+  cfg(){try{return JSON.parse(localStorage.getItem('pump')||'{}')}catch(e){return{}}},
+  ready(){const c=this.cfg();return !!(c.ip&&c.key)},
+  async hmac(msg){
+    const enc=new TextEncoder(),k=await crypto.subtle.importKey('raw',enc.encode(this.cfg().key),{name:'HMAC',hash:'SHA-256'},false,['sign']);
+    const sig=new Uint8Array(await crypto.subtle.sign('HMAC',k,enc.encode(msg)));
+    return Array.from(sig,b=>b.toString(16).padStart(2,'0')).join('');
   },
-  
-  async sendCommand(cmd) {
-    if (!this.characteristic) { toast("ESP32 não conectado!", 1); return; }
-    try {
-      let encoder = new TextEncoder();
-      await this.characteristic.writeValue(encoder.encode(cmd));
-    } catch (e) {
-      toast("Erro ao enviar comando: " + e.message, 1);
-    }
+  async call(path,init){
+    const ctl=new AbortController(),t=setTimeout(()=>ctl.abort(),2500);
+    try{
+      const r=await fetch('http://'+this.cfg().ip+path,{cache:'no-store',targetAddressSpace:'local',signal:ctl.signal,...init});
+      const j=await r.json().catch(()=>null);
+      this.up=!!j;
+      if(j&&j.nonce)this.nonce=j.nonce;
+      return{status:r.status,j};
+    }catch(e){this.up=false;return{status:0,j:null}}
+    finally{clearTimeout(t)}
   },
-  
-  isConnected() {
-    return this.characteristic != null;
+  status(){return this.call('/status')},
+  async cmd(c){
+    if(!this.ready())return{status:0,j:null};
+    const post=body=>this.call('/cmd',{method:'POST',headers:{'Content-Type':'text/plain'},body});
+    if(c==='OFF')return post('OFF|-|-');
+    for(let i=0;i<2;i++){
+      if(!this.nonce){const s=await this.status();if(!s.j)return s}
+      const n=this.nonce;this.nonce=null;
+      const r=await post(c+'|'+n+'|'+await this.hmac(c+'|'+n));
+      if(r.status!==401)return r;
+    }
+    return{status:401,j:null};
+  },
+  tap(){
+    if(!this.ready()){toast('Configure o IP e a chave da bomba em Ajustes.',1);return}
+    toast('Verificando a bomba...');this.status().then(refresh);
   }
 };
-/* ------------------------------------------------------------- */
+function refresh(){if(S.tab==='a'&&S.step<3)render()}
+let poll=0;
+function startPoll(){
+  clearInterval(poll);
+  poll=setInterval(async()=>{
+    if(document.hidden||S.tab!=='a'||S.pump||!PUMP.ready())return;
+    const was=PUMP.up;await PUMP.status();if(was!==PUMP.up)refresh();
+  },4000);
+  if(PUMP.ready())PUMP.status().then(refresh);
+}
 
+/* ---------- Controle da bomba ---------- */
+let keep=0,wl=null;
+const stopKeep=()=>{clearInterval(keep);keep=0};
+async function wake(on){
+  try{if(on&&navigator.wakeLock)wl=await navigator.wakeLock.request('screen');else if(wl){await wl.release();wl=null}}catch(e){}
+}
+const MOTIVOS={lease:'sem comunicação',maximo:'tempo máximo',botao:'botão de emergência',ota:'atualização do ESP'};
+function autoStop(m,ms){
+  stopKeep();S.pump='off';S.t1=new Date();S.auto=m;S.dur=ms?Math.round(ms/1000):null;S.step=3;wake(false);render();
+  toast('A bomba parou sozinha ('+(MOTIVOS[m]||m)+').',1);
+}
+function startKeep(){
+  stopKeep();
+  keep=setInterval(async()=>{
+    if(S.pump!=='on'||S.keeping)return;
+    S.keeping=true;
+    try{
+      const r=await PUMP.cmd('KEEP');
+      if(S.pump!=='on')return;
+      if(r.j&&r.j.pump===1){S.miss=0}
+      else if(r.j&&r.j.pump===0){autoStop(r.j.motivo||'esp',r.j.ultimo_ms)}
+      else if(++S.miss>=2){stopKeep();S.pump='fail';S.t1=new Date();render();toast('Sem resposta da bomba. Ela deve parar sozinha em 5 segundos.',1)}
+    }finally{S.keeping=false}
+  },2000);
+}
+async function liberar(){
+  if(S.busy||S.pump==='on'||S.pump==='fail')return;
+  S.busy=true;S.pump='starting';render();
+  try{
+    const r=await PUMP.cmd('ON');
+    if(r.j&&r.j.pump===1){
+      S.pump='on';S.ol=oleo();S.t0=new Date();S.t1=null;S.manual=false;S.auto=null;S.dur=null;S.miss=0;
+      startKeep();wake(true);toast('Bomba ligada.');
+    }else{
+      S.pump=null;
+      toast(r.status===401?'A chave da bomba não confere. Veja em Ajustes.':'Não consegui ligar a bomba. Verifique o ESP8266.',1);
+    }
+  }finally{S.busy=false;render()}
+}
+async function cortar(){
+  if(S.cutting||(S.pump!=='on'&&S.pump!=='fail'))return;
+  S.cutting=true;
+  try{
+    stopKeep();
+    let r=null;
+    for(let i=0;i<3;i++){r=await PUMP.cmd('OFF');if(r.j&&r.j.pump===0)break;await sleep(400)}
+    if(r&&r.j&&r.j.pump===0){
+      S.pump='off';S.t1=S.t1||new Date();S.dur=r.j.ultimo_ms?Math.round(r.j.ultimo_ms/1000):null;S.step=3;wake(false);render();
+      toast('Bomba parada.');
+    }else{
+      S.pump='fail';S.t1=S.t1||new Date();render();toast('NÃO CONSEGUI CONFIRMAR A PARADA.',1);
+    }
+  }finally{S.cutting=false}
+}
+function cortarManual(){
+  if(S.pump!=='fail')return;
+  S.pump='off';S.manual=true;S.t1=S.t1||new Date();S.step=3;wake(false);render();
+}
+document.addEventListener('visibilitychange',()=>{if(document.hidden&&S.pump==='on')cortar()});
 
-/* Banco local (IndexedDB) */
+/* ---------- Banco local (IndexedDB) ---------- */
 let db;
 const req=r=>new Promise((ok,no)=>{r.onsuccess=()=>ok(r.result);r.onerror=()=>no(r.error)});
 const store=m=>db.transaction('abast',m).objectStore('abast');
@@ -146,7 +212,7 @@ q.onsuccess=()=>{db=q.result;render()};
 q.onerror=()=>toast('Não foi possível abrir o banco do tablet.',1);
 if(navigator.storage&&navigator.storage.persist)navigator.storage.persist();
 
-/* Arquivos */
+/* ---------- Arquivos ---------- */
 const cols=['id','inicio','fim','duracao_s','colaborador','cracha_id','maquina','totem_id','produto','litros','obs','foto_arquivo','sincronizado'];
 const csv=rows=>[cols.join(';')].concat(rows.map(r=>cols.map(c=>{
   let v=c==='foto_arquivo'?(r.foto?'foto_'+r.id+'.jpg':''):c==='litros'?fmt(r.litros):r[c];
@@ -159,9 +225,8 @@ async function exportHour(h,novo){
   dl('abastecimentos_'+h+'.csv','\ufeff'+csv(rows),'text/csv;charset=utf-8');
   if(novo&&novo.foto)setTimeout(()=>dl('foto_'+novo.id+'.jpg',dataBlob(novo.foto)),500);
 }
-async function exportAll(){dl('abastecimentos_todos_'+hk(new Date())+'.csv','\ufeff'+csv((await all()).sort((a,b)=>a.id-b.id)),'text/csv;charset=utf-8')}
 
-/* Envio ao banco SQL no GitHub */
+/* ---------- Envio ao banco SQL no GitHub ---------- */
 let syncing=false;
 async function sync(){
   if(syncing)return;syncing=true;
@@ -170,27 +235,59 @@ async function sync(){
 }
 addEventListener('online',()=>sync().then(()=>toast('Pendentes enviados.')).catch(()=>{}));
 
-/* NFC */
+/* ---------- NFC ---------- */
 function tag(id){
-  if(S.step>1||!id)return;
-  const k=S.step===0?'w':'m';
-  let name=reg[k][id];
-  if(!name){toast((k==='w'?'Crachá':'Totem')+' não cadastrado ('+id+'). Peça ao administrador.',1);return}
-  if(k==='w')S.w={id,name};else{S.m={id,name};} // Não iniciar timer aqui ainda
+  if(S.step>1)return;
+  const k=S.step===0?'w':'m',name=lookup(k,id);
+  if(!name){toast((k==='w'?'Crachá':'Totem')+' não cadastrado'+(isAdmin()&&id?' ('+id+')':'')+'. Peça ao administrador.',1);return}
+  if(k==='w')S.w={id,name};else S.m={id,name};
   S.step++;render();if(navigator.vibrate)navigator.vibrate(120);
+  if(k==='m')liberar();
+}
+function needPump(){
+  if(!PUMP.ready()){toast('Configure o IP e a chave da bomba em Ajustes.',1);return false}
+  if(PUMP.up!==true){toast('Sem resposta da bomba. Verifique o Wi-Fi e a energia do ESP8266.',1);PUMP.status().then(refresh);return false}
+  return true;
 }
 function manual(){
-    if(!BLE.isConnected()){ toast('A conexão Bluetooth com o ESP32 deve ser realizada primeiro.', 1); return; }
-    const id=prompt(S.step===0?'Código do crachá:':'Código do totem da máquina:');if(id)tag(id.trim())
+  if(!isAdmin()){toast('Digitar código só com o login de Ajustes (supervisor).',1);return}
+  if(!needPump())return;
+  const id=prompt(S.step===0?'Código do crachá:':'Código do totem da máquina:');
+  if(id)tag(id.trim());
 }
 const oleo=()=>{try{return JSON.parse(localStorage.getItem('oleo')||'null')}catch(e){return null}};
-const prod=()=>{const o=oleo();return o&&o.nome?o.nome+(o.viscosidade?' '+o.viscosidade:''):'HF28'};
+const oleos=()=>{try{return JSON.parse(localStorage.getItem('oleos')||'[]')}catch(e){return[]}};
+const oleoAtual=()=>S.ol||oleo();
+const prod=()=>{const o=oleoAtual();return o&&o.nome?o.nome+(o.viscosidade?' '+o.viscosidade:''):'HF28'};
 function oleoCard(){
-  const o=oleo();if(!o)return'';
-  return'<section class="g"><h2>Óleo em uso</h2><p><b>'+esc(o.nome)+'</b> '+esc(o.viscosidade||'')+'</p>'
-    +(o.codigo?'<p class="m">Código de requisição: '+esc(o.codigo)+'</p>':'')
-    +(o.preco!=null?'<p class="m">Preço: '+Number(o.preco).toLocaleString('pt-BR',{style:'currency',currency:'BRL'})+' por litro</p>':'')
-    +(o.fornecedor?'<p class="m">Fornecedor: '+esc(o.fornecedor)+'</p>':'')+'</section>';
+  const o=oleo(),L=oleos();
+  if(!o&&!L.length)return'';
+  const sel=L.length>1?'<label>Óleo deste abastecimento<select id="osel" onchange="setOleo(this.value)">'+L.map(x=>'<option value="'+esc(x.uid)+'"'+(o&&x.uid===o.uid?' selected':'')+'>'+esc(x.nome)+(x.viscosidade?' '+esc(x.viscosidade):'')+'</option>').join('')+'</select></label>':'';
+  return'<section class="g"><h2>Óleo em uso</h2>'+sel
+    +(o?'<p><b>'+esc(o.nome)+'</b> '+esc(o.viscosidade||'')+'</p>':'')
+    +(o&&o.codigo?'<p class="m">Código de requisição: '+esc(o.codigo)+'</p>':'')
+    +(o&&o.preco!=null?'<p class="m">Preço: '+Number(o.preco).toLocaleString('pt-BR',{style:'currency',currency:'BRL'})+' por litro</p>':'')
+    +(o&&o.fornecedor?'<p class="m">Fornecedor: '+esc(o.fornecedor)+'</p>':'')+'</section>';
+}
+async function pushOleo(){
+  const uid=localStorage.getItem('oleoPend');
+  if(!uid||!GH.ok())return;
+  try{
+    await GH.edit(d=>{d.run('UPDATE oleos SET ativo=CASE WHEN uid=? THEN 1 ELSE 0 END',[uid])},'chore(data): óleo em uso');
+    localStorage.removeItem('oleoPend');
+    toast('Óleo em uso salvo para todos os aparelhos.');
+  }catch(e){toast('Óleo trocado neste tablet. Será enviado quando houver conexão.',1)}
+}
+async function setOleo(uid){
+  const L=oleos(),o=L.find(x=>x.uid===uid);
+  if(!o)return;
+  if(pumpBusy()||S.step>1){toast('Troque o óleo antes de ler a máquina.',1);render();return}
+  L.forEach(x=>{x.ativo=x.uid===uid?1:0});
+  localStorage.setItem('oleos',JSON.stringify(L));
+  localStorage.setItem('oleo',JSON.stringify(o));
+  localStorage.setItem('oleoPend',uid);
+  render();
+  await pushOleo();
 }
 function stopNFC(){
   if(S.ctl)S.ctl.abort();
@@ -199,105 +296,84 @@ function stopNFC(){
   render();toast('Leitura NFC parada.');
 }
 async function startNFC(){
-  if(!BLE.isConnected()){ toast('A conexão Bluetooth com o ESP32 deve ser realizada primeiro.', 1); return; }
-  if(!('NDEFReader' in window)){toast('Navegador sem NFC. Use Chrome Android ou digite.',1);return}
+  if(!needPump())return;
+  if(!('NDEFReader' in window)){toast('Navegador sem NFC. Use Chrome Android.',1);return}
   try{
     const r=new NDEFReader();S.ctl=new AbortController();await r.scan({signal:S.ctl.signal});
-    r.onreading=e=>{let id=e.serialNumber;for(const x of e.message.records)if(x.recordType==='text'){id=new TextDecoder(x.encoding||'utf-8').decode(x.data);break}tag(id)};
+    r.onreading=e=>{
+      let id=e.serialNumber;
+      if(S.step===1)for(const x of e.message.records)if(x.recordType==='text'){id=new TextDecoder(x.encoding||'utf-8').decode(x.data);break}
+      tag(id);
+    };
     r.onreadingerror=()=>toast('Falha na leitura. Tente de novo.',1);
     S.nfc=true;render();
   }catch(e){toast('NFC bloqueado. Ative no tablet.',1)}
 }
 
-/* Fluxo de Liberação da Bomba */
-async function iniciarAbastecimento(){
-    await BLE.sendCommand("1"); // Comando para Ligar a Bomba
-    toast('Relé Ativado. Bomba Liberada!');
-    S.t0=new Date();
-    S.step=2; 
-    render();
-}
-
-async function finalizarAbastecimento(){
-    await BLE.sendCommand("0"); // Comando para Desligar a Bomba
-    toast('Relé Desativado. Bomba Cortada.', 1);
-    S.step=3; 
-    render();
-}
-
-function go(t){S.tab=t;render()}
-async function reset(){
-  // Garante que a bomba não fique ligada se o cara cancelar no meio
-  if(S.step === 2 && BLE.isConnected()) await BLE.sendCommand("0");
-  S.step=0;S.w=S.m=S.t0=S.photo=null;render()
+/* ---------- Fluxo ---------- */
+function nav(u){if(pumpBusy()){toast('Corte a bomba antes de sair desta tela.',1);return}location.href=u}
+function go(t){if(pumpBusy()){toast('Corte a bomba antes de sair desta tela.',1);return}S.tab=t;render()}
+function reset(){
+  if(pumpBusy()){toast('Corte a bomba antes de sair.',1);return}
+  Object.assign(S,{step:0,w:null,m:null,t0:null,t1:null,pump:null,manual:false,ol:null,auto:null,dur:null,miss:0,photo:null});
+  render();
 }
 function photo(i){
   const f=i.files[0];if(!f)return;const im=new Image();
   im.onload=()=>{const k=Math.min(1,720/Math.max(im.width,im.height)),c=document.createElement('canvas');c.width=im.width*k;c.height=im.height*k;c.getContext('2d').drawImage(im,0,0,c.width,c.height);S.photo=c.toDataURL('image/jpeg',.6);$('#pv').src=S.photo;$('#pv').hidden=false;URL.revokeObjectURL(im.src)};
   im.src=URL.createObjectURL(f);
 }
+const secs=()=>S.dur!=null?S.dur:Math.max(0,Math.round((S.t1-S.t0)/1000));
+const dur=()=>{const s=secs();return p2(Math.floor(s/60))+':'+p2(s%60)};
 async function save(){
   const l=parseFloat(($('#lt').value||'').replace(',','.'));
   if(!(l>0)){toast('Informe os litros abastecidos.',1);return}
   if(!S.photo){toast('Tire a foto do visor de dosagem. Ela é obrigatória.',1);return}
-  const fim=new Date();
-  const r={uid:crypto.randomUUID(),inicio:S.t0.toISOString(),fim:fim.toISOString(),hora:hk(fim),duracao_s:Math.round((fim-S.t0)/1000),colaborador:S.w.name,cracha_id:S.w.id,maquina:S.m.name,totem_id:S.m.id,produto:prod(),oleo:(oleo()||{}).nome||'HF28',preco:oleo()&&oleo().preco!=null?oleo().preco:null,litros:l,obs:$('#ob').value.trim(),foto:S.photo,sincronizado:false};
+  if(!S.t0||!S.t1){toast('Abastecimento sem registro de tempo. Cancele e refaça.',1);return}
+  const fim=S.t1,o=oleoAtual();
+  const r={uid:crypto.randomUUID(),inicio:S.t0.toISOString(),fim:fim.toISOString(),hora:hk(fim),duracao_s:secs(),colaborador:S.w.name,cracha_id:S.w.id,maquina:S.m.name,totem_id:S.m.id,produto:prod(),oleo:(o||{}).nome||'HF28',preco:o&&o.preco!=null?o.preco:null,litros:l,obs:(S.manual?'[parada manual] ':'')+(S.auto?'[parada automática: '+S.auto+'] ':'')+$('#ob').value.trim(),foto:S.photo,sincronizado:false};
   try{r.id=await put(r)}catch(e){toast('Erro ao gravar no banco: '+e.message,1);return}
   if(localStorage.getItem('csv')!=='0')await exportHour(r.hora,r);
   reset();toast('Salvando no banco do GitHub...');
   try{await sync();toast('Salvo no banco do GitHub.')}catch(e){toast('Salvo no tablet. Envio pendente: '+e.message,1)}
 }
-function delReg(k,i){if(confirm('Remover este cadastro?')){delete reg[k][i];saveReg();cfg()}}
 
-/* Telas */
-function render(){
-  document.querySelectorAll('#nav button').forEach(b=>b.classList.toggle('on',b.dataset.t===S.tab));
-  if(S.tab==='c')return cfg();
-  
-  // Painel Bluetooth
-  let bleUI = `
-    <div class="esp-card" onclick="BLE.connect()">
-      <div class="esp-icon ${BLE.isConnected() ? 'on' : ''}">
-        ${BLE.isConnected() ? '&#9728;' : '&#9842;'} 
-      </div>
-      <div class="esp-info">
-        <h3>Bomba ESP32</h3>
-        <p class="${BLE.isConnected() ? 'esp-status-on' : 'esp-status-off'}">${BLE.isConnected() ? 'Conectado. Pronto para liberar.' : 'Desconectado. Toque para parear.'}</p>
-      </div>
-    </div>
-  `;
-
-  const L=['Crachá','Máquina','Liberar Bomba','Registrar'];
-  let h=window.isSecureContext?'':'<p class="warn">Esta página não está em HTTPS, NFC/Bluetooth não funcionam.</p>';
-  
-  if (S.step === 0) h += bleUI; // Só mostra painel BLE no início
-
-  h+='<div class="steps">'+L.map((x,i)=>'<span class="'+(i<S.step?'done':i===S.step?'cur':'')+'">'+x+'</span>').join('')+'</div>';
+/* ---------- Telas ---------- */
+const pumpCard=()=>{
+  const cfg=PUMP.ready(),on=PUMP.up===true;
+  const txt=!cfg?'Configure o IP e a chave em Ajustes.':PUMP.up===null?'Verificando...':on?'Conectada ao ESP8266. Pronta.':'Sem resposta. Toque para tentar de novo.';
+  return'<button id="ble" class="esp-card" onclick="PUMP.tap()"><div class="esp-icon '+(on?'on':'')+'">'+(on?'&#9728;':'&#9842;')+'</div><div class="esp-info"><h3>Bomba ESP8266</h3><p class="'+(on?'esp-status-on':'esp-status-off')+'">'+txt+'</p></div></button>';
+};
+function stepHtml(){
   if(S.step<2){
     const w=S.step===0;
-    h+='<section class="g c"><div class="ring '+(S.nfc?'on':'')+'"><b>NFC</b></div><h1>'+(w?'Aproxime o seu crachá':'Aproxime o totem da máquina')+'</h1>'
+    return'<section class="g c"><div class="ring '+(S.nfc?'on':'')+'"><b>NFC</b></div><h1>'+(w?'Aproxime o seu crachá':'Aproxime o totem da máquina')+'</h1>'
       +'<p class="m">'+(S.nfc?'Leitura ativa. Encoste na parte de trás do tablet.':'Toque em ativar para liberar a leitura NFC.')+'</p>'
       +(S.w&&!w?'<p class="who">'+esc(S.w.name)+'</p>':'')
       +(S.nfc?'<button class="b" onclick="stopNFC()">Parar leitura NFC</button>':'<button class="b p" onclick="startNFC()">Ativar leitura NFC</button>')
       +'<button class="b" onclick="manual()">Digitar código</button></section>'+oleoCard();
-  }else if(S.step===2){
-    // STEP 2: Tudo LIDO. Mostra botão GIGANTE para liberar
-    if(!S.t0) {
-        h+='<section class="g c"><p class="m">Colaborador</p><p class="who">'+esc(S.w.name)+'</p><p class="m">Máquina</p><p class="who">'+esc(S.m.name)+'</p>'
-        +'<button class="b ble" style="height: 100px; font-size: 1.3rem" onclick="iniciarAbastecimento()">LIBERAR BOMBA (LIGAR)</button>'
-        +'<button class="b" onclick="reset()">Cancelar</button></section>';
-    } else {
-        h+='<section class="g c"><p class="m">Bomba Liberada para:</p><p class="who">'+esc(S.m.name)+'</p><p class="m">Produto: '+esc(prod())+'</p><div class="tm" id="tm">00:00</div>'
-        +'<button class="b r" style="height: 100px; font-size: 1.3rem" onclick="finalizarAbastecimento()">CORTAR BOMBA (FINALIZAR)</button></section>';
-    }
-  }else{
-    h+='<section class="g"><h1>Registrar abastecimento</h1><p class="m">'+esc(S.w.name)+' na máquina '+esc(S.m.name)+'</p>'
-      +'<label>Litros abastecidos<input id="lt" type="number" inputmode="decimal" step="0.01" min="0" placeholder="0,00"></label>'
-      +'<label>Foto do visor de dosagem (obrigatória)<input id="ph" type="file" accept="image/*" capture="environment" onchange="photo(this)"></label>'
-      +'<img id="pv" alt="Foto do visor" '+(S.photo?'src="'+S.photo+'"':'hidden')+'>'
-      +'<label>Observação (opcional)<input id="ob" type="text"></label>'
-      +'<button class="b p" onclick="save()">Salvar Abastecimento</button><button class="b" onclick="S.step=2;render()">Voltar</button></section>';
   }
+  if(S.step===2){
+    const quem='<p class="m">Colaborador</p><p class="who">'+esc(S.w.name)+'</p><p class="m">Máquina</p><p class="who">'+esc(S.m.name)+'</p>';
+    if(S.pump==='starting')return'<section class="g c">'+quem+'<p class="m">Ligando a bomba...</p></section>';
+    if(S.pump==='on')return'<section class="g c"><p class="m">Bomba ligada para:</p><p class="who">'+esc(S.m.name)+'</p><p class="m">Produto: '+esc(prod())+'</p><div class="tm" id="tm">00:00</div><button class="b r big" onclick="cortar()">MÁQUINA ABASTECIDA (PARAR BOMBA)</button></section>';
+    if(S.pump==='fail')return'<section class="g c"><p class="warn"><b>Não foi possível confirmar que a bomba parou.</b><br>Desligue pelo botão de emergência ou pelo disjuntor da bomba e avise a manutenção.</p><button class="b r big" onclick="cortar()">TENTAR PARAR DE NOVO</button><button class="b d" onclick="cortarManual()">Já parei a bomba manualmente</button></section>';
+    return'<section class="g c">'+quem+'<p class="warn">Não consegui ligar a bomba. Verifique o ESP8266 e a rede.</p><button class="b p" onclick="liberar()">Tentar de novo</button><button class="b" onclick="reset()">Cancelar</button></section>';
+  }
+  return'<section class="g"><h1>Registrar abastecimento</h1><p class="m">'+esc(S.w.name)+' na máquina '+esc(S.m.name)+'. Bomba ligada por '+dur()+(S.manual?' (parada manual)':'')+(S.auto?' (parada automática)':'')+'.</p>'
+    +'<label>Litros abastecidos<input id="lt" type="number" inputmode="decimal" step="0.01" min="0" placeholder="0,00"></label>'
+    +'<label>Foto do visor de dosagem (obrigatória)<input id="ph" type="file" accept="image/*" capture="environment" onchange="photo(this)"></label>'
+    +'<img id="pv" alt="Foto do visor" '+(S.photo?'src="'+S.photo+'"':'hidden')+'>'
+    +'<label>Observação (opcional)<input id="ob" type="text"></label>'
+    +'<button class="b p" onclick="save()">Salvar abastecimento</button></section>';
+}
+function render(){
+  document.querySelectorAll('#nav button').forEach(b=>b.classList.toggle('on',b.dataset.t===S.tab));
+  if(S.tab==='c')return cfg();
+  const L=['Crachá','Máquina','Liberar Bomba','Registrar'];
+  let h=window.isSecureContext?'':'<p class="warn">Esta página não está em HTTPS, então NFC e Bluetooth não funcionam.</p>';
+  if(S.step<3)h+=pumpCard();
+  h+='<div class="steps">'+L.map((x,i)=>'<span class="'+(i<S.step?'done':i===S.step?'cur':'')+'">'+x+'</span>').join('')+'</div>'+stepHtml();
   $('#main').innerHTML=h;
 }
 let dp;
@@ -309,40 +385,72 @@ async function saveGh(){
   try{const priv=await GH.test();toast(priv?'Conectado ao repositório privado.':'Conectado, mas o repositório é público.',!priv)}
   catch(e){toast('Falha: '+e.message,1)}
 }
+async function saveBomba(){
+  const ip=$('#bi').value.trim(),key=$('#bk').value.trim();
+  if(!/^(10\.\d{1,3}|192\.168|172\.(1[6-9]|2\d|3[01]))\.\d{1,3}\.\d{1,3}$/.test(ip)){toast('Use o IP local do ESP8266, por exemplo 192.168.0.50.',1);return}
+  if(key.length<16){toast('A chave deve ter pelo menos 16 caracteres.',1);return}
+  localStorage.setItem('pump',JSON.stringify({ip,key}));PUMP.nonce=null;PUMP.up=null;
+  toast('Testando...');
+  const s=await PUMP.status();
+  if(!s.j){toast('Sem resposta do ESP8266. Confira o Wi-Fi, o IP e a permissão de rede local do Chrome.',1);refresh();return}
+  const k=await PUMP.cmd('KEEP');
+  toast(k.status===200?'Conectado e a chave confere.':k.status===401?'Conectado, mas a chave não confere.':k.status===429?'Muitas tentativas. Aguarde 30 segundos.':'Resposta inesperada ('+k.status+').',k.status!==200);
+  refresh();
+}
 function togCsv(){localStorage.setItem('csv',localStorage.getItem('csv')==='0'?'1':'0');cfg()}
+function login(){
+  if($('#lu').value===GH.AUTH.u&&$('#lp').value===GH.AUTH.p){sessionStorage.setItem('auth','1');cfg()}
+  else toast('Usuário ou senha incorretos.',1);
+}
+function sair(){sessionStorage.removeItem('auth');cfg()}
 async function cfg(){
-  if(sessionStorage.getItem('auth')!=='1'){
+  if(!isAdmin()){
     $('#main').innerHTML='<section class="g"><h1>Ajustes</h1><p class="m">Entre para alterar as configurações.</p><label>Usuário<input id="lu" autocomplete="off" autocapitalize="off"></label><label>Senha<input id="lp" type="password" autocomplete="off"></label><button class="b p" onclick="login()">Entrar</button></section>';
     return;
   }
   const c=GH.cfg(),n=(await all()).filter(r=>!r.sincronizado).length;
-  let cad='';
-  for(const k of ['w','m'])for(const i in reg[k])cad+='<li><div><b>'+esc(reg[k][i])+'</b><span class="m">'+(k==='w'?'Crachá':'Totem')+' '+esc(i)+'</span></div><button class="x" data-i="'+esc(i)+'" onclick="delReg(\''+k+'\',this.dataset.i)">Remover</button></li>';
   $('#main').innerHTML='<section class="g"><h1>Ajustes</h1><p class="m">'+(n?n+' abastecimento(s) aguardando envio.':'Tudo enviado ao banco do GitHub.')+'</p>'
     +(n?'<button class="b p" onclick="enviar()">Enviar pendentes agora</button>':'')
     +(dp?'<button class="b" onclick="instalar()">Instalar como app</button>':'')+'<button class="b" onclick="sair()">Sair dos ajustes</button></section>'
     +'<section class="g"><h2>Banco no GitHub</h2><label>Repositório dos dados<input id="gr" value="'+esc(c.repo||'')+'"></label><label>Branch<input id="gb" value="'+esc(c.branch||'main')+'"></label><label>Token de acesso<input id="gt" type="password" value="'+esc(c.token||'')+'" autocomplete="off"></label><button class="b" onclick="saveGh()">Salvar e testar</button></section>'
-    +'<section class="g"><h2>Cadastros</h2><button class="b" onclick="atualizarCad()">Atualizar cadastros</button><button class="b d" onclick="limparLocal()">Limpar locais</button><button class="b" onclick="location.href=\'admin.html\'">Administração</button></section>';
+    +'<section class="g"><h2>Bomba (ESP8266)</h2><p class="m">IP do ESP8266 na rede e a mesma chave gravada no firmware (config.h).</p><label>IP da bomba<input id="bi" inputmode="decimal" value="'+esc(PUMP.cfg().ip||'')+'" placeholder="192.168.0.50" autocomplete="off"></label><label>Chave secreta<input id="bk" type="password" value="'+esc(PUMP.cfg().key||'')+'" autocomplete="off"></label><button class="b" onclick="saveBomba()">Salvar e testar</button></section>'
+    +'<section class="g"><h2>Arquivos na pasta Downloads</h2><button class="b" onclick="togCsv()">CSV da hora ao salvar: '+(localStorage.getItem('csv')==='0'?'desligado':'ligado')+'</button></section>'
+    +'<section class="g"><h2>Cadastros</h2><p class="m">'+Object.keys(reg.w).length+' pessoas e '+Object.keys(reg.m).length+' máquinas, vindas do banco.</p><button class="b" onclick="atualizarCad()">Atualizar cadastros</button><button class="b d" onclick="limparLocal()">Limpar cadastros deste tablet</button><button class="b" onclick="location.href=\'admin.html\'">Administração</button></section>';
 }
-function login(){if($('#lu').value===GH.AUTH.u&&$('#lp').value===GH.AUTH.p){sessionStorage.setItem('auth','1');cfg()}else toast('Incorreto.',1);}
-function sair(){sessionStorage.removeItem('auth');cfg()}
-async function limparLocal(){if(!confirm('Apagar pessoas e máquinas locais?'))return;reg.w={};reg.m={};saveReg();await atualizarCad(1);toast('Locais limpos.');cfg();}
+async function limparLocal(){
+  if(!confirm('Apagar as pessoas e máquinas guardadas neste tablet e baixar de novo do banco? Precisa de internet.'))return;
+  reg.w={};reg.m={};saveReg();await atualizarCad(1);toast('Cadastros do tablet refeitos a partir do banco.');cfg();
+}
 async function atualizarCad(quiet){
   if(!GH.ok())return;
   try{
+    await pushOleo();
     const c=await GH.cad();
-    if(c&&(c.pessoas.length||c.maquinas.length)){reg.w={};reg.m={};c.pessoas.forEach(p=>reg.w[p.nfc]=p.nome);c.maquinas.forEach(m=>reg.m[m.nfc]=m.nome);saveReg()}
-    if(c&&c.oleos&&c.oleos.length)localStorage.setItem('oleo',JSON.stringify(c.oleos.find(x=>x.ativo)||c.oleos[0]));
+    if(c&&(c.pessoas.length||c.maquinas.length)){
+      reg.w={};reg.m={};
+      c.pessoas.forEach(p=>{if(okId(p.nfc))reg.w[p.nfc]=p.nome});
+      c.maquinas.forEach(m=>{if(okId(m.nfc))reg.m[m.nfc]=m.nome});
+      saveReg();
+    }
+    if(c&&c.oleos&&c.oleos.length){
+      localStorage.setItem('oleos',JSON.stringify(c.oleos));
+      if(!localStorage.getItem('oleoPend'))localStorage.setItem('oleo',JSON.stringify(c.oleos.find(x=>x.ativo)||c.oleos[0]));
+    }
     if(S.tab==='a'&&S.step<2)render();
     if(!quiet)toast('Cadastros atualizados.');
     if(S.tab==='c')cfg();
-  }catch(e){if(!quiet)toast('Erro de atlz: '+((e&&e.message)||e),1)}
+  }catch(e){if(!quiet)toast('Não consegui atualizar: '+((e&&e.message)||e),1)}
 }
 addEventListener('online',()=>atualizarCad(1));
 atualizarCad(1);
+startPoll();
 if(location.hash==='#ajustes')S.tab='c';
 if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js');
-setInterval(()=>{const e=$('#tm');if(e&&S.t0){const s=Math.floor((Date.now()-S.t0)/1000);e.textContent=p2(Math.floor(s/60))+':'+p2(s%60)}},1000);
+setInterval(()=>{
+  if(S.pump!=='on'||!S.t0)return;
+  const s=Math.floor((Date.now()-S.t0)/1000),e=$('#tm');
+  if(e)e.textContent=p2(Math.floor(s/60))+':'+p2(s%60);
+},1000);
 </script>
 </body>
 </html>
