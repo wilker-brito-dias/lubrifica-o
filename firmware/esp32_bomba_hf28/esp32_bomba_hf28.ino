@@ -23,6 +23,7 @@
  */
 
 #include <Arduino.h>
+#include <esp_arduino_version.h>
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
@@ -420,9 +421,18 @@ static void initBLE() {
   // PIN estático de 6 dígitos + Secure Connections + MITM + bonding.
   // setStaticPIN é a API disponível no Arduino-ESP32 3.0.x–3.3.x.
   BLESecurity security;
+#if ESP_ARDUINO_VERSION <= ESP_ARDUINO_VERSION_VAL(3, 3, 0)
   security.setStaticPIN(BLE_STATIC_PIN);
   security.setCapability(ESP_IO_CAP_OUT);
   security.setAuthenticationMode(ESP_LE_AUTH_REQ_SC_MITM_BOND);
+  security.setRespEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
+  BLEDevice::setEncryptionLevel(ESP_BLE_SEC_ENCRYPT);
+#else
+  BLESecurity::setPassKey(true, BLE_STATIC_PIN);
+  BLESecurity::setCapability(ESP_IO_CAP_OUT);
+  BLESecurity::setAuthenticationMode(true, true, true);
+  BLESecurity::setEncryptionLevel(ESP_BLE_SEC_ENCRYPT);
+#endif
 
   BLEDevice::setSecurityCallbacks(new PumpSecurityCallbacks());
 
