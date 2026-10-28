@@ -1,6 +1,6 @@
 /*
  * Lubrifica-o — Firmware ESP32 para a bomba HF-28
- * Placa: ESP32-WROOM-32E
+ * Placa: LILYGO TTGO T-Display clássica (ESP32 + TFT ST7789)
  * Arduino-ESP32: série 3.x
  *
  * BLE:
