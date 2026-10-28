@@ -57,11 +57,11 @@ input{display:block;width:100%;max-width:100%;min-width:0;margin-top:6px;padding
 #toast.show{opacity:1}
 .esp-card{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;text-align:left;font:inherit;color:inherit;cursor:pointer;padding:clamp(10px,3vw,16px);background:rgba(0,0,0,.4);border-radius:16px;border:1px solid var(--line)}
 .esp-icon{flex:none;width:clamp(40px,11vw,50px);height:clamp(40px,11vw,50px);border-radius:12px;background:var(--line);display:grid;place-items:center;font-size:1.5rem}
-.esp-icon.on{background:var(--ok);color:#000}
+.esp-icon.on{background:var(--ble);color:#fff}
 .esp-info{flex:1}
 .esp-info h3{margin:0 0 4px;font-size:1.1rem}
 .esp-info p{margin:0;font-size:.85rem}
-.esp-status-off{color:var(--bad)}
+.esp-status-off{color:var(--mut)}
 .esp-status-on{color:var(--ok);font-weight:700}
 select{display:block;width:100%;max-width:100%;min-width:0;margin-top:6px;padding:14px;font:inherit;color:var(--ink);background:rgba(0,0,0,.3);border:1px solid var(--line);border-radius:14px}
 select:focus-visible{outline:3px solid #7cc4ff;outline-offset:2px}
@@ -90,92 +90,86 @@ const lookup=(k,id)=>okId(id)&&Object.hasOwn(reg[k],id)?reg[k][id]:null;
 const pumpBusy=()=>S.pump==='on'||S.pump==='fail'||S.pump==='starting';
 function toast(t,bad){const e=$('#toast');e.textContent=t;e.className='show'+(bad?' bad':'');clearTimeout(toast.k);toast.k=setTimeout(()=>e.className='',4000)}
 
-/* ---------- Bomba (ESP8266 por Wi-Fi) ---------- */
-const PUMP={
-  up:null,nonce:null,
-  cfg(){try{return JSON.parse(localStorage.getItem('pump')||'{}')}catch(e){return{}}},
-  ready(){const c=this.cfg();return !!(c.ip&&c.key)},
-  async hmac(msg){
-    const enc=new TextEncoder(),k=await crypto.subtle.importKey('raw',enc.encode(this.cfg().key),{name:'HMAC',hash:'SHA-256'},false,['sign']);
-    const sig=new Uint8Array(await crypto.subtle.sign('HMAC',k,enc.encode(msg)));
-    return Array.from(sig,b=>b.toString(16).padStart(2,'0')).join('');
-  },
-  async call(path,init){
-    const ctl=new AbortController(),t=setTimeout(()=>ctl.abort(),2500);
-    try{
-      const r=await fetch('http://'+this.cfg().ip+path,{cache:'no-store',targetAddressSpace:'local',signal:ctl.signal,...init});
-      const j=await r.json().catch(()=>null);
-      this.up=!!j;
-      if(j&&j.nonce)this.nonce=j.nonce;
-      return{status:r.status,j};
-    }catch(e){this.up=false;return{status:0,j:null}}
-    finally{clearTimeout(t)}
-  },
-  status(){return this.call('/status')},
-  async cmd(c){
-    if(!this.ready())return{status:0,j:null};
-    const post=body=>this.call('/cmd',{method:'POST',headers:{'Content-Type':'text/plain'},body});
-    if(c==='OFF')return post('OFF|-|-');
-    for(let i=0;i<2;i++){
-      if(!this.nonce){const s=await this.status();if(!s.j)return s}
-      const n=this.nonce;this.nonce=null;
-      const r=await post(c+'|'+n+'|'+await this.hmac(c+'|'+n));
-      if(r.status!==401)return r;
+/* ---------- Bomba (ESP32 via Web Bluetooth BLE) ---------- */
+const SERVICE_UUID = "0000aaaa-0000-1000-8000-00805f9b34fb";
+const CHAR_UUID = "0000bbbb-0000-1000-8000-00805f9b34fb";
+
+const PUMP = {
+  device: null,
+  char: null,
+  up: false,
+  
+  async connect() {
+    if (!navigator.bluetooth) {
+      toast('Bluetooth não suportado neste navegador. Use Chrome Android.', 1);
+      return;
     }
-    return{status:401,j:null};
+    try {
+      toast('Procurando ESP32...');
+      this.device = await navigator.bluetooth.requestDevice({
+        filters: [{ namePrefix: 'Bomba' }],
+        optionalServices: [SERVICE_UUID]
+      });
+      
+      this.device.addEventListener('gattserverdisconnected', () => {
+        this.up = false;
+        this.char = null;
+        if(S.pump === 'on') autoStop('desconexão BLE', null);
+        render();
+        toast('Conexão Bluetooth perdida com a bomba.', 1);
+      });
+
+      const server = await this.device.gatt.connect();
+      const service = await server.getPrimaryService(SERVICE_UUID);
+      this.char = await service.getCharacteristic(CHAR_UUID);
+      
+      this.up = true;
+      render();
+      toast('Conectado ao ESP32 via Bluetooth.');
+    } catch (e) {
+      this.up = false;
+      toast('Falha ao conectar: ' + e.message, 1);
+      render();
+    }
   },
-  tap(){
-    if(!this.ready()){toast('Configure o IP e a chave da bomba em Ajustes.',1);return}
-    toast('Verificando a bomba...');this.status().then(refresh);
+
+  async cmd(c) {
+    if (!this.up || !this.char) return { status: 0 };
+    try {
+      const enc = new TextEncoder();
+      await this.char.writeValue(enc.encode(c));
+      return { status: 200, j: { pump: c === "1" ? 1 : 0 } };
+    } catch (e) {
+      return { status: 0 };
+    }
+  },
+
+  tap() {
+    this.connect();
   }
 };
-function refresh(){if(S.tab==='a'&&S.step<3)render()}
-let poll=0;
-function startPoll(){
-  clearInterval(poll);
-  poll=setInterval(async()=>{
-    if(document.hidden||S.tab!=='a'||S.pump||!PUMP.ready())return;
-    const was=PUMP.up;await PUMP.status();if(was!==PUMP.up)refresh();
-  },4000);
-  if(PUMP.ready())PUMP.status().then(refresh);
-}
 
 /* ---------- Controle da bomba ---------- */
-let keep=0,wl=null;
-const stopKeep=()=>{clearInterval(keep);keep=0};
+let wl=null;
 async function wake(on){
   try{if(on&&navigator.wakeLock)wl=await navigator.wakeLock.request('screen');else if(wl){await wl.release();wl=null}}catch(e){}
 }
-const MOTIVOS={lease:'sem comunicação',maximo:'tempo máximo',botao:'botão de emergência',ota:'atualização do ESP'};
 function autoStop(m,ms){
-  stopKeep();S.pump='off';S.t1=new Date();S.auto=m;S.dur=ms?Math.round(ms/1000):null;S.step=3;wake(false);render();
-  toast('A bomba parou sozinha ('+(MOTIVOS[m]||m)+').',1);
+  S.pump='off';S.t1=new Date();S.auto=m;S.dur=ms?Math.round(ms/1000):null;S.step=3;wake(false);render();
+  toast('A bomba parou: ' + m, 1);
 }
-function startKeep(){
-  stopKeep();
-  keep=setInterval(async()=>{
-    if(S.pump!=='on'||S.keeping)return;
-    S.keeping=true;
-    try{
-      const r=await PUMP.cmd('KEEP');
-      if(S.pump!=='on')return;
-      if(r.j&&r.j.pump===1){S.miss=0}
-      else if(r.j&&r.j.pump===0){autoStop(r.j.motivo||'esp',r.j.ultimo_ms)}
-      else if(++S.miss>=2){stopKeep();S.pump='fail';S.t1=new Date();render();toast('Sem resposta da bomba. Ela deve parar sozinha em 5 segundos.',1)}
-    }finally{S.keeping=false}
-  },2000);
-}
+
 async function liberar(){
   if(S.busy||S.pump==='on'||S.pump==='fail')return;
   S.busy=true;S.pump='starting';render();
   try{
-    const r=await PUMP.cmd('ON');
-    if(r.j&&r.j.pump===1){
+    const r=await PUMP.cmd('1');
+    if(r.status === 200){
       S.pump='on';S.ol=oleo();S.t0=new Date();S.t1=null;S.manual=false;S.auto=null;S.dur=null;S.miss=0;
-      startKeep();wake(true);toast('Bomba ligada.');
+      wake(true);toast('Bomba ligada via Bluetooth.');
     }else{
       S.pump=null;
-      toast(r.status===401?'A chave da bomba não confere. Veja em Ajustes.':'Não consegui ligar a bomba. Verifique o ESP8266.',1);
+      toast('Não consegui ligar a bomba. O ESP32 está conectado?', 1);
     }
   }finally{S.busy=false;render()}
 }
@@ -183,14 +177,13 @@ async function cortar(){
   if(S.cutting||(S.pump!=='on'&&S.pump!=='fail'))return;
   S.cutting=true;
   try{
-    stopKeep();
     let r=null;
-    for(let i=0;i<3;i++){r=await PUMP.cmd('OFF');if(r.j&&r.j.pump===0)break;await sleep(400)}
-    if(r&&r.j&&r.j.pump===0){
-      S.pump='off';S.t1=S.t1||new Date();S.dur=r.j.ultimo_ms?Math.round(r.j.ultimo_ms/1000):null;S.step=3;wake(false);render();
+    for(let i=0;i<3;i++){r=await PUMP.cmd('0');if(r.status === 200)break;await sleep(400)}
+    if(r && r.status === 200){
+      S.pump='off';S.t1=S.t1||new Date();S.dur=null;S.step=3;wake(false);render();
       toast('Bomba parada.');
     }else{
-      S.pump='fail';S.t1=S.t1||new Date();render();toast('NÃO CONSEGUI CONFIRMAR A PARADA.',1);
+      S.pump='fail';S.t1=S.t1||new Date();render();toast('NÃO CONSEGUI CONFIRMAR A PARADA PELO BLUETOOTH.', 1);
     }
   }finally{S.cutting=false}
 }
@@ -245,8 +238,7 @@ function tag(id){
   if(k==='m')liberar();
 }
 function needPump(){
-  if(!PUMP.ready()){toast('Configure o IP e a chave da bomba em Ajustes.',1);return false}
-  if(PUMP.up!==true){toast('Sem resposta da bomba. Verifique o Wi-Fi e a energia do ESP8266.',1);PUMP.status().then(refresh);return false}
+  if(!PUMP.up){toast('Conecte ao Bluetooth do ESP32 primeiro.',1);return false}
   return true;
 }
 function manual(){
@@ -340,9 +332,9 @@ async function save(){
 
 /* ---------- Telas ---------- */
 const pumpCard=()=>{
-  const cfg=PUMP.ready(),on=PUMP.up===true;
-  const txt=!cfg?'Configure o IP e a chave em Ajustes.':PUMP.up===null?'Verificando...':on?'Conectada ao ESP8266. Pronta.':'Sem resposta. Toque para tentar de novo.';
-  return'<button id="ble" class="esp-card" onclick="PUMP.tap()"><div class="esp-icon '+(on?'on':'')+'">'+(on?'&#9728;':'&#9842;')+'</div><div class="esp-info"><h3>Bomba ESP8266</h3><p class="'+(on?'esp-status-on':'esp-status-off')+'">'+txt+'</p></div></button>';
+  const on=PUMP.up===true;
+  const txt=on?'Conectada ao ESP32. Pronta.':'Toque para conectar o Bluetooth.';
+  return'<button id="ble" class="esp-card" onclick="PUMP.tap()"><div class="esp-icon '+(on?'on':'')+'">B</div><div class="esp-info"><h3>Bomba ESP32</h3><p class="'+(on?'esp-status-on':'esp-status-off')+'">'+txt+'</p></div></button>';
 };
 function stepHtml(){
   if(S.step<2){
@@ -357,8 +349,8 @@ function stepHtml(){
     const quem='<p class="m">Colaborador</p><p class="who">'+esc(S.w.name)+'</p><p class="m">Máquina</p><p class="who">'+esc(S.m.name)+'</p>';
     if(S.pump==='starting')return'<section class="g c">'+quem+'<p class="m">Ligando a bomba...</p></section>';
     if(S.pump==='on')return'<section class="g c"><p class="m">Bomba ligada para:</p><p class="who">'+esc(S.m.name)+'</p><p class="m">Produto: '+esc(prod())+'</p><div class="tm" id="tm">00:00</div><button class="b r big" onclick="cortar()">MÁQUINA ABASTECIDA (PARAR BOMBA)</button></section>';
-    if(S.pump==='fail')return'<section class="g c"><p class="warn"><b>Não foi possível confirmar que a bomba parou.</b><br>Desligue pelo botão de emergência ou pelo disjuntor da bomba e avise a manutenção.</p><button class="b r big" onclick="cortar()">TENTAR PARAR DE NOVO</button><button class="b d" onclick="cortarManual()">Já parei a bomba manualmente</button></section>';
-    return'<section class="g c">'+quem+'<p class="warn">Não consegui ligar a bomba. Verifique o ESP8266 e a rede.</p><button class="b p" onclick="liberar()">Tentar de novo</button><button class="b" onclick="reset()">Cancelar</button></section>';
+    if(S.pump==='fail')return'<section class="g c"><p class="warn"><b>Não foi possível confirmar que a bomba parou via Bluetooth.</b><br>Desligue pelo botão de emergência ou pelo disjuntor da bomba e avise a manutenção.</p><button class="b r big" onclick="cortar()">TENTAR PARAR DE NOVO</button><button class="b d" onclick="cortarManual()">Já parei a bomba manualmente</button></section>';
+    return'<section class="g c">'+quem+'<p class="warn">Não consegui ligar a bomba. O ESP32 desconectou?</p><button class="b p" onclick="liberar()">Tentar de novo</button><button class="b" onclick="reset()">Cancelar</button></section>';
   }
   return'<section class="g"><h1>Registrar abastecimento</h1><p class="m">'+esc(S.w.name)+' na máquina '+esc(S.m.name)+'. Bomba ligada por '+dur()+(S.manual?' (parada manual)':'')+(S.auto?' (parada automática)':'')+'.</p>'
     +'<label>Litros abastecidos<input id="lt" type="number" inputmode="decimal" step="0.01" min="0" placeholder="0,00"></label>'
@@ -385,18 +377,7 @@ async function saveGh(){
   try{const priv=await GH.test();toast(priv?'Conectado ao repositório privado.':'Conectado, mas o repositório é público.',!priv)}
   catch(e){toast('Falha: '+e.message,1)}
 }
-async function saveBomba(){
-  const ip=$('#bi').value.trim(),key=$('#bk').value.trim();
-  if(!/^(10\.\d{1,3}|192\.168|172\.(1[6-9]|2\d|3[01]))\.\d{1,3}\.\d{1,3}$/.test(ip)){toast('Use o IP local do ESP8266, por exemplo 192.168.0.50.',1);return}
-  if(key.length<16){toast('A chave deve ter pelo menos 16 caracteres.',1);return}
-  localStorage.setItem('pump',JSON.stringify({ip,key}));PUMP.nonce=null;PUMP.up=null;
-  toast('Testando...');
-  const s=await PUMP.status();
-  if(!s.j){toast('Sem resposta do ESP8266. Confira o Wi-Fi, o IP e a permissão de rede local do Chrome.',1);refresh();return}
-  const k=await PUMP.cmd('KEEP');
-  toast(k.status===200?'Conectado e a chave confere.':k.status===401?'Conectado, mas a chave não confere.':k.status===429?'Muitas tentativas. Aguarde 30 segundos.':'Resposta inesperada ('+k.status+').',k.status!==200);
-  refresh();
-}
+
 function togCsv(){localStorage.setItem('csv',localStorage.getItem('csv')==='0'?'1':'0');cfg()}
 function login(){
   if($('#lu').value===GH.AUTH.u&&$('#lp').value===GH.AUTH.p){sessionStorage.setItem('auth','1');cfg()}
@@ -413,7 +394,6 @@ async function cfg(){
     +(n?'<button class="b p" onclick="enviar()">Enviar pendentes agora</button>':'')
     +(dp?'<button class="b" onclick="instalar()">Instalar como app</button>':'')+'<button class="b" onclick="sair()">Sair dos ajustes</button></section>'
     +'<section class="g"><h2>Banco no GitHub</h2><label>Repositório dos dados<input id="gr" value="'+esc(c.repo||'')+'"></label><label>Branch<input id="gb" value="'+esc(c.branch||'main')+'"></label><label>Token de acesso<input id="gt" type="password" value="'+esc(c.token||'')+'" autocomplete="off"></label><button class="b" onclick="saveGh()">Salvar e testar</button></section>'
-    +'<section class="g"><h2>Bomba (ESP8266)</h2><p class="m">IP do ESP8266 na rede e a mesma chave gravada no firmware (config.h).</p><label>IP da bomba<input id="bi" inputmode="decimal" value="'+esc(PUMP.cfg().ip||'')+'" placeholder="192.168.0.50" autocomplete="off"></label><label>Chave secreta<input id="bk" type="password" value="'+esc(PUMP.cfg().key||'')+'" autocomplete="off"></label><button class="b" onclick="saveBomba()">Salvar e testar</button></section>'
     +'<section class="g"><h2>Arquivos na pasta Downloads</h2><button class="b" onclick="togCsv()">CSV da hora ao salvar: '+(localStorage.getItem('csv')==='0'?'desligado':'ligado')+'</button></section>'
     +'<section class="g"><h2>Cadastros</h2><p class="m">'+Object.keys(reg.w).length+' pessoas e '+Object.keys(reg.m).length+' máquinas, vindas do banco.</p><button class="b" onclick="atualizarCad()">Atualizar cadastros</button><button class="b d" onclick="limparLocal()">Limpar cadastros deste tablet</button><button class="b" onclick="location.href=\'admin.html\'">Administração</button></section>';
 }
@@ -443,7 +423,6 @@ async function atualizarCad(quiet){
 }
 addEventListener('online',()=>atualizarCad(1));
 atualizarCad(1);
-startPoll();
 if(location.hash==='#ajustes')S.tab='c';
 if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js');
 setInterval(()=>{
