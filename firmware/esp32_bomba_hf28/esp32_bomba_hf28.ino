@@ -1,34 +1,24 @@
 /*
- * Lubrifica-o — Firmware ESP32 para a bomba HF-28
- * Placa: LILYGO TTGO T-Display clássica (ESP32 + TFT ST7789)
- * Arduino-ESP32: série 3.x
+ * LUBRIFICAÇÃO — ESP32 + LILYGO TTGO T-Display (ST7789 240x135)
  *
- * BLE:
- *   Nome    : Bomba_HF28
- *   Serviço : 0000aaaa-0000-1000-8000-00805f9b34fb
- *   Char.   : 0000bbbb-0000-1000-8000-00805f9b34fb (READ + WRITE protegidos)
- *   PIN     : 123456 (pareamento com Secure Connections + MITM + bonding)
+ * Interface: mascote robotico original, com olhos-capsula grandes e solidos, sem pupilas.
+ * Inicio com logo; repouso com olhos fechados e Zzz; conectado feliz;
+ * bomba ativa com sorriso e indicador ABASTECENDO; parada com STOP.
+ * BOOT (GPIO0): acorda irritado em vermelho e reclama por 34 s apos despertar.
+ * Botao de usuario GPIO35: expressao debochada em marrom pelo mesmo periodo.
  *
- * Relé:
- *   GPIO 26 — HIGH = bomba ligada; LOW = bomba desligada.
+ * Relé GPIO26: HIGH liga / LOW desliga. BLE permanece compativel com o PWA:
+ * nome Bomba_HF28, serviço aaaa, característica bbbb, comandos '1'/'0'.
  *
- * Display LILYGO TTGO T-Display:
- *   TFT colorido ST7789, 240x135, SPI: MOSI=19, SCLK=18, CS=5, DC=16, RST=23, BL=4.
- *
- * IMPORTANTE:
- * - O relé começa em LOW e também é desligado em desconexão BLE.
- * - O display é acessório; o servidor BLE inicia antes da tela.
- * - Botão BOOT (GPIO0): animação visual de raiva por alguns segundos.
- * - Botão GPIO35: animação visual de dança por alguns segundos.
- *   Botões são apenas interações com o personagem e nunca acionam o relé.
- * - Para uma instalação industrial, use intertravamento/parada de emergência
- *   independente do ESP32 e driver apropriado para a bobina/carga do relé.
+ * Bibliotecas: Adafruit GFX Library; Adafruit ST7735 and ST7789 Library.
+ * O relé entra em LOW no boot, na desconexao e em falha de autenticacao BLE.
  */
 
 #include <Arduino.h>
-#include <initializer_list>
 #include <esp_arduino_version.h>
 #include <SPI.h>
+#include <math.h>
+#include <pgmspace.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7789.h>
 
@@ -41,56 +31,49 @@
   #include <esp_gap_ble_api.h>
 #endif
 
-// --------------------------- Hardware ---------------------------------------
-
+// =========================== HARDWARE =======================================
 static constexpr uint8_t RELAY_PIN = 26;
-
-// Pinagem interna da LILYGO TTGO T-Display clássica (TFT ST7789).
 static constexpr uint8_t TFT_MOSI_PIN = 19;
 static constexpr uint8_t TFT_SCLK_PIN = 18;
-static constexpr uint8_t TFT_CS_PIN = 5;
-static constexpr uint8_t TFT_DC_PIN = 16;
-static constexpr uint8_t TFT_RST_PIN = 23;
-static constexpr uint8_t TFT_BL_PIN = 4;
+static constexpr uint8_t TFT_CS_PIN   = 5;
+static constexpr uint8_t TFT_DC_PIN   = 16;
+static constexpr uint8_t TFT_RST_PIN  = 23;
+static constexpr uint8_t TFT_BL_PIN   = 4;
 static constexpr uint16_t TFT_NATIVE_WIDTH = 135;
 static constexpr uint16_t TFT_NATIVE_HEIGHT = 240;
 
+// Botões da TTGO T-Display clássica: BOOT=GPIO0 e botão de usuário=GPIO35.
+static constexpr uint8_t BUTTON_BOOT_PIN = 0;
+static constexpr uint8_t BUTTON_USER_PIN = 35;
+static constexpr uint32_t BUTTON_DEBOUNCE_MS = 35;
+static constexpr uint32_t ANGRY_DURATION_MS = 4000;   // 4 segundos reclamando apos acordar
+static constexpr uint32_t SASSY_DURATION_MS = 34000;  // mesmo ciclo para o botao de usuario
+static constexpr uint32_t WAKE_ANIMATION_MS = 720;
+static constexpr uint32_t PUMP_STOP_DISPLAY_MS = 1900;
+static constexpr uint32_t SPLASH_DURATION_MS = 1750;
+static constexpr uint32_t FACE_FRAME_MS = 32;
 static constexpr uint32_t BLE_STATIC_PIN = 123456;
 
-// Botões internos da TTGO T-Display: BOOT=GPIO0 e botão de usuário=GPIO35.
-// Ambos são ativos em LOW. GPIO35 é input-only e usa o pull-up da própria placa.
-static constexpr uint8_t BUTTON_BOOT_PIN = 0;
-static constexpr uint8_t BUTTON_DANCE_PIN = 35;
-static constexpr uint32_t BUTTON_DEBOUNCE_MS = 35;
-static constexpr uint32_t ANGRY_DURATION_MS = 3800;
-static constexpr uint32_t DANCE_DURATION_MS = 7000;
+static constexpr int16_t FACE_AREA_X = 10;
+static constexpr int16_t FACE_AREA_Y = 19;
+static constexpr int16_t FACE_AREA_W = 220;
+static constexpr int16_t FACE_AREA_H = 90;
 
 Adafruit_ST7789 tft(&SPI, TFT_CS_PIN, TFT_DC_PIN, TFT_RST_PIN);
+GFXcanvas16 faceCanvas(FACE_AREA_W, FACE_AREA_H);
 static bool tftReady = false;
 
-// Buffer fora da tela: o rosto é composto em RAM e enviado em um único bloco SPI,
-// evitando o flash momentâneo que ocorre ao apagar e redesenhar cada olho no TFT.
-static constexpr int16_t FACE_AREA_X = 29;
-static constexpr int16_t FACE_AREA_Y = 27;
-static constexpr int16_t FACE_AREA_W = 182;
-static constexpr int16_t FACE_AREA_H = 59;
-GFXcanvas16 faceCanvas(FACE_AREA_W, FACE_AREA_H);
-
-// --------------------------- BLE identifiers -------------------------------
-
+// =========================== BLE ============================================
 static const char* BLE_DEVICE_NAME = "Bomba_HF28";
 static const char* SERVICE_UUID = "0000aaaa-0000-1000-8000-00805f9b34fb";
 static const char* CHARACTERISTIC_UUID = "0000bbbb-0000-1000-8000-00805f9b34fb";
 
 static BLEServer* bleServer = nullptr;
 static BLECharacteristic* commandCharacteristic = nullptr;
-
-// Estas variáveis são lidas/escritas por tarefas diferentes (loop e callbacks BLE).
 static volatile bool bleConnected = false;
 static volatile bool relayActive = false;
 
-// --------------------------- OLED / expressões ------------------------------
-
+// =========================== UI STATE TYPES =================================
 enum UiState : uint8_t {
   UI_BOOT = 0,
   UI_WAITING,
@@ -100,21 +83,20 @@ enum UiState : uint8_t {
   UI_DISCONNECTED
 };
 
-// Definição antes de qualquer função que use UiSnapshot.
-// Isso também evita erro de protótipo automático gerado pelo Arduino IDE.
 struct UiSnapshot {
   UiState state;
   uint32_t changedAt;
 };
 
-// Protótipo explícito: evita que o pré-processador do Arduino IDE gere
-// getUiSnapshot() antes da definição do tipo de retorno.
+// Definido antes dos protótipos para evitar erros do pré-processador Arduino.
 static UiSnapshot getUiSnapshot();
 
+// As interações com os botões são exclusivamente visuais.
 enum RobotInteraction : uint8_t {
   ROBOT_NORMAL = 0,
+  ROBOT_WAKING,
   ROBOT_ANGRY,
-  ROBOT_DANCE
+  ROBOT_SASSY
 };
 
 static RobotInteraction robotInteraction = ROBOT_NORMAL;
@@ -129,68 +111,4767 @@ struct ButtonDebouncer {
 };
 
 static ButtonDebouncer bootButton{BUTTON_BOOT_PIN, true, true, 0, false};
-static ButtonDebouncer danceButton{BUTTON_DANCE_PIN, true, true, 0, false};
-
-// Leitura sem delay: não bloqueia BLE nem o controle do relé.
-static bool buttonPressedEdge(ButtonDebouncer& button, uint32_t now) {
-  const bool raw = digitalRead(button.pin);
-  if (!button.initialized) {
-    button.rawState = raw;
-    button.stableState = raw;
-    button.lastChangeAt = now;
-    button.initialized = true;
-    return false;
-  }
-
-  if (raw != button.rawState) {
-    button.rawState = raw;
-    button.lastChangeAt = now;
-  }
-
-  if ((now - button.lastChangeAt) >= BUTTON_DEBOUNCE_MS &&
-      button.stableState != button.rawState) {
-    button.stableState = button.rawState;
-    return button.stableState == LOW; // dispara somente no pressionamento
-  }
-
-  return false;
-}
-
-static void initRobotButtons() {
-  pinMode(BUTTON_BOOT_PIN, INPUT_PULLUP);
-  // GPIO35 é somente entrada e não possui pull-up interno utilizável nesta placa.
-  pinMode(BUTTON_DANCE_PIN, INPUT);
-  const uint32_t now = millis();
-  bootButton = {BUTTON_BOOT_PIN, static_cast<bool>(digitalRead(BUTTON_BOOT_PIN)),
-                static_cast<bool>(digitalRead(BUTTON_BOOT_PIN)), now, true};
-  danceButton = {BUTTON_DANCE_PIN, static_cast<bool>(digitalRead(BUTTON_DANCE_PIN)),
-                 static_cast<bool>(digitalRead(BUTTON_DANCE_PIN)), now, true};
-}
-
-static void updateRobotInteractions(uint32_t now) {
-  // Interações visuais apenas: essas funções não tocam no relé nem no BLE.
-  if (buttonPressedEdge(bootButton, now)) {
-    robotInteraction = ROBOT_ANGRY;
-    interactionStartedAt = now;
-    Serial.println("[UI] Botao BOOT: robo bravo.");
-  } else if (buttonPressedEdge(danceButton, now)) {
-    robotInteraction = ROBOT_DANCE;
-    interactionStartedAt = now;
-    Serial.println("[UI] Botao GPIO35: robo dancando.");
-  }
-
-  const uint32_t duration =
-      (robotInteraction == ROBOT_ANGRY) ? ANGRY_DURATION_MS : DANCE_DURATION_MS;
-  if (robotInteraction != ROBOT_NORMAL &&
-      (now - interactionStartedAt) >= duration) {
-    robotInteraction = ROBOT_NORMAL;
-  }
-}
+static ButtonDebouncer userButton{BUTTON_USER_PIN, true, true, 0, false};
 
 static portMUX_TYPE uiMux = portMUX_INITIALIZER_UNLOCKED;
 static volatile UiState currentUiState = UI_BOOT;
 static volatile uint32_t uiChangedAt = 0;
 
+// =========================== CORES ==========================================
+static constexpr uint16_t BG_COLOR = 0x0000;
+static constexpr uint16_t WHITE_COLOR = 0xFFFF;
+static constexpr uint16_t RED_COLOR = 0xF800;
+static constexpr uint16_t BROWN_COLOR = 0xA345;
+
+static bool splashActive = false;
+static uint32_t splashStartedAt = 0;
+static uint32_t splashProgressDrawnAt = 0;
+static uint16_t faceColorCurrent = WHITE_COLOR;
+static uint16_t faceColorFrom = WHITE_COLOR;
+static uint16_t faceColorTarget = WHITE_COLOR;
+static uint32_t faceTransitionStartedAt = 0;
+static float faceMorphProgress = 1.0f;
+
+// Animation director state: deterministic micro-variations, soft clip changes, and event reactions.
+static uint8_t activePoseClip = 0;
+static uint8_t previousPoseClip = 0;
+static uint8_t basePoseClip = 0;
+static uint32_t activePoseClipStartedAt = 0;
+static uint32_t previousPoseClipStartedAt = 0;
+static uint32_t poseClipTransitionAt = 0;
+static uint32_t nextPoseClipAt = 0;
+static uint32_t activePoseHoldUntil = 0;
+static uint32_t poseRandomState = 0xA57B07UL;
+static bool poseDirectorInitialized = false;
+static UiState lastDirectorUiState = UI_BOOT;
+static RobotInteraction lastDirectorInteraction = ROBOT_NORMAL;
+static bool lastDirectorSplashState = false;
+static volatile uint8_t pendingRobotEvent = 0;
+static uint8_t activeEventClip = 255;
+static uint32_t activeEventUntil = 0;
+static bool eventClipPlaying = false;
+static portMUX_TYPE animationMux = portMUX_INITIALIZER_UNLOCKED;
+
+// ================= ROBOT ANIMATION BANK: 68 CLIPS x 64 KEYS =================
+// Each row is a meaningful sampled pose, not filler. 64 samples per clip are
+// stored in flash and interpolated at runtime to produce continuous motion.
+// Fields: X/Y drift, left/right width/height, left/right tilt, mouth lift/open, squash, sparkles.
+enum RobotClipId : uint8_t {
+  CLIP_SLEEP_BREATH = 0,
+  CLIP_SLEEP_FLOAT = 1,
+  CLIP_SLEEP_TWITCH = 2,
+  CLIP_SLEEP_DREAM = 3,
+  CLIP_SLEEP_MICRO_BLINK = 4,
+  CLIP_SLEEP_Z_BOB = 5,
+  CLIP_SLEEP_TUCK = 6,
+  CLIP_SLEEP_DROWSY = 7,
+  CLIP_CONNECTED_IDLE = 8,
+  CLIP_CONNECTED_HAPPY_BOUNCE = 9,
+  CLIP_CONNECTED_BLINK = 10,
+  CLIP_CONNECTED_GLANCE_LEFT = 11,
+  CLIP_CONNECTED_GLANCE_RIGHT = 12,
+  CLIP_CONNECTED_SLOW_BLINK = 13,
+  CLIP_CONNECTED_CURIOSITY = 14,
+  CLIP_CONNECTED_DOUBLE_BLINK = 15,
+  CLIP_CONNECTED_SMILE = 16,
+  CLIP_CONNECTED_SQUASH = 17,
+  CLIP_CONNECTED_WAVE = 18,
+  CLIP_CONNECTED_SETTLE = 19,
+  CLIP_PUMP_RHYTHM = 20,
+  CLIP_PUMP_CELEBRATION = 21,
+  CLIP_PUMP_GENTLE_BOUNCE = 22,
+  CLIP_PUMP_DROP_RISE = 23,
+  CLIP_PUMP_HAPPY_BLINK = 24,
+  CLIP_PUMP_PULSE = 25,
+  CLIP_PUMP_REASSURE = 26,
+  CLIP_PUMP_JOYOUS = 27,
+  CLIP_PUMP_FLOW = 28,
+  CLIP_PUMP_THUMBS_UP = 29,
+  CLIP_PUMP_STEADY = 30,
+  CLIP_PUMP_FINAL_BEAT = 31,
+  CLIP_STOP_IMPACT = 32,
+  CLIP_STOP_SETTLE = 33,
+  CLIP_STOP_SERIOUS = 34,
+  CLIP_STOP_EXHALE = 35,
+  CLIP_LINK_LOST_SURPRISE = 36,
+  CLIP_LINK_LOST_BLINK = 37,
+  CLIP_LINK_SEARCH_LEFT = 38,
+  CLIP_LINK_SEARCH_RIGHT = 39,
+  CLIP_LINK_SAD_SETTLE = 40,
+  CLIP_LINK_WAIT = 41,
+  CLIP_LINK_RETRY = 42,
+  CLIP_LINK_RECOVER = 43,
+  CLIP_WAKE_ANTICIPATE = 44,
+  CLIP_WAKE_SNAP_OPEN = 45,
+  CLIP_ANGRY_FROWN = 46,
+  CLIP_ANGRY_SHAKE = 47,
+  CLIP_ANGRY_GLARE = 48,
+  CLIP_ANGRY_SETTLE = 49,
+  CLIP_SASSY_SIDE_EYE = 50,
+  CLIP_SASSY_WINK = 51,
+  CLIP_SASSY_SMIRK = 52,
+  CLIP_SASSY_SHAKE = 53,
+  CLIP_SASSY_ARC = 54,
+  CLIP_SASSY_SETTLE = 55,
+  CLIP_INTRO_ORBIT = 56,
+  CLIP_INTRO_DROPLET = 57,
+  CLIP_INTRO_REVEAL = 58,
+  CLIP_INTRO_PULSE = 59,
+  CLIP_INTRO_SPARK = 60,
+  CLIP_INTRO_TEXT_REVEAL = 61,
+  CLIP_INTRO_IDLE = 62,
+  CLIP_INTRO_EXIT = 63,
+  CLIP_EVENT_ACK = 64,
+  CLIP_EVENT_CONFIRM = 65,
+  CLIP_EVENT_ERROR = 66,
+  CLIP_EVENT_RETURN = 67,
+  ROBOT_CLIP_COUNT = 68
+};
+static constexpr uint8_t POSE_KEY_COUNT = 64;
+
+struct PoseKeyframe {
+  int8_t driftX;
+  int8_t driftY;
+  int8_t eyeWidthL;
+  int8_t eyeWidthR;
+  int8_t eyeHeightL;
+  int8_t eyeHeightR;
+  int8_t eyeTiltL;
+  int8_t eyeTiltR;
+  int8_t mouthLift;
+  int8_t mouthOpen;
+  int8_t verticalSquash;
+  uint8_t sparkle;
+};
+
+struct RobotPose {
+  float driftX;
+  float driftY;
+  float eyeWidthL;
+  float eyeWidthR;
+  float eyeHeightL;
+  float eyeHeightR;
+  float eyeTiltL;
+  float eyeTiltR;
+  float mouthLift;
+  float mouthOpen;
+  float verticalSquash;
+  float sparkle;
+};
+
+static const uint16_t kPoseClipDurationMs[ROBOT_CLIP_COUNT] PROGMEM = {
+  3600, // CLIP_SLEEP_BREATH
+  3862, // CLIP_SLEEP_FLOAT
+  4124, // CLIP_SLEEP_TWITCH
+  4386, // CLIP_SLEEP_DREAM
+  4648, // CLIP_SLEEP_MICRO_BLINK
+  4910, // CLIP_SLEEP_Z_BOB
+  5172, // CLIP_SLEEP_TUCK
+  4811, // CLIP_SLEEP_DROWSY
+  2623, // CLIP_CONNECTED_IDLE
+  2885, // CLIP_CONNECTED_HAPPY_BOUNCE
+  3147, // CLIP_CONNECTED_BLINK
+  1358, // CLIP_CONNECTED_GLANCE_LEFT
+  1620, // CLIP_CONNECTED_GLANCE_RIGHT
+  1882, // CLIP_CONNECTED_SLOW_BLINK
+  1521, // CLIP_CONNECTED_CURIOSITY
+  1783, // CLIP_CONNECTED_DOUBLE_BLINK
+  2045, // CLIP_CONNECTED_SMILE
+  2307, // CLIP_CONNECTED_SQUASH
+  2569, // CLIP_CONNECTED_WAVE
+  2831, // CLIP_CONNECTED_SETTLE
+  2242, // CLIP_PUMP_RHYTHM
+  1881, // CLIP_PUMP_CELEBRATION
+  2143, // CLIP_PUMP_GENTLE_BOUNCE
+  1054, // CLIP_PUMP_DROP_RISE
+  1316, // CLIP_PUMP_HAPPY_BLINK
+  1578, // CLIP_PUMP_PULSE
+  1840, // CLIP_PUMP_REASSURE
+  2102, // CLIP_PUMP_JOYOUS
+  1741, // CLIP_PUMP_FLOW
+  2003, // CLIP_PUMP_THUMBS_UP
+  2265, // CLIP_PUMP_STEADY
+  1176, // CLIP_PUMP_FINAL_BEAT
+  1082, // CLIP_STOP_IMPACT
+  793, // CLIP_STOP_SETTLE
+  1055, // CLIP_STOP_SERIOUS
+  1245, // CLIP_STOP_EXHALE
+  1213, // CLIP_LINK_LOST_SURPRISE
+  1475, // CLIP_LINK_LOST_BLINK
+  1737, // CLIP_LINK_SEARCH_LEFT
+  1999, // CLIP_LINK_SEARCH_RIGHT
+  2261, // CLIP_LINK_SAD_SETTLE
+  1022, // CLIP_LINK_WAIT
+  2162, // CLIP_LINK_RETRY
+  923, // CLIP_LINK_RECOVER
+  1282, // CLIP_WAKE_ANTICIPATE
+  1544, // CLIP_WAKE_SNAP_OPEN
+  905, // CLIP_ANGRY_FROWN
+  1167, // CLIP_ANGRY_SHAKE
+  1429, // CLIP_ANGRY_GLARE
+  1068, // CLIP_ANGRY_SETTLE
+  1332, // CLIP_SASSY_SIDE_EYE
+  1594, // CLIP_SASSY_WINK
+  1856, // CLIP_SASSY_SMIRK
+  2118, // CLIP_SASSY_SHAKE
+  1179, // CLIP_SASSY_ARC
+  1441, // CLIP_SASSY_SETTLE
+  879, // CLIP_INTRO_ORBIT
+  1141, // CLIP_INTRO_DROPLET
+  1403, // CLIP_INTRO_REVEAL
+  1665, // CLIP_INTRO_PULSE
+  876, // CLIP_INTRO_SPARK
+  1138, // CLIP_INTRO_TEXT_REVEAL
+  1400, // CLIP_INTRO_IDLE
+  1039, // CLIP_INTRO_EXIT
+  789, // CLIP_EVENT_ACK
+  1051, // CLIP_EVENT_CONFIRM
+  812, // CLIP_EVENT_ERROR
+  1074, // CLIP_EVENT_RETURN
+};
+
+static const PoseKeyframe kRobotAnimationBank[ROBOT_CLIP_COUNT][POSE_KEY_COUNT] PROGMEM = {
+  { // 00: SLEEP_BREATH
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // key 00
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0},
+    {0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0},
+    {0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0}, // key 08
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 1},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 1},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 1},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 1},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 1},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 1},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0}, // key 16
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0}, // key 24
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0}, // key 32
+    {1, 1, 1, 1, 1, 0, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 0, 0, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 0, 0, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 0, 0, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 0, 0, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0},
+    {1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0},
+    {1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0}, // key 40
+    {1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0},
+    {1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0},
+    {1, 0, 0, 0, 0, 0, -1, 1, 1, 0, 0, 0},
+    {1, 0, 0, 0, 0, 0, -1, 1, 1, 0, 0, 0},
+    {1, 0, 0, 0, 0, -1, -1, 1, 0, 0, 0, 0},
+    {1, 0, 0, 0, 0, -1, -1, 1, 0, 0, 0, 0},
+    {1, 0, 0, 0, -1, -1, -1, 1, 0, 0, 0, 0},
+    {1, 0, 0, 0, -1, -1, -1, 1, 0, 0, 0, 0}, // key 48
+    {1, 0, 0, 0, -1, -1, -1, 1, 0, 0, 0, 0},
+    {1, -1, 0, 0, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, -1, 0, -1, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, -1, 0, -1, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, -1, -1, -1, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, -1, -1, -1, -1, -1, 0, 0, 0, 0, 0, 0},
+    {0, -1, -1, -1, -1, -1, 0, 0, 0, 0, 0, 0},
+    {0, -1, -1, -1, -1, -1, 0, 0, 0, 0, 0, 0}, // key 56
+    {0, -1, -1, -1, -1, -1, 0, 0, 0, 0, 0, 0},
+    {0, -1, -1, -1, -1, -1, 0, 0, 0, 0, -1, 0},
+    {0, -1, -1, -1, -1, -1, 0, 0, 0, 0, -1, 1},
+    {0, -1, -1, -1, -1, -1, 0, 0, 0, 0, -1, 1},
+    {0, -1, -1, -1, -1, -1, 0, 0, 0, 0, -1, 1},
+    {0, -1, -1, -1, -1, -1, 0, 0, 0, 0, -1, 1},
+    {0, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 1},
+  },
+  { // 01: SLEEP_FLOAT
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // key 00
+    {0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0},
+    {0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 1},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 1}, // key 08
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 1},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 1},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 1},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 1},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0}, // key 16
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0}, // key 24
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 0, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 0, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 0, 0, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 0, 0, 0, 0, 1, 0, 1, 0}, // key 32
+    {1, 1, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0},
+    {1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0},
+    {1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0},
+    {1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0},
+    {1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0},
+    {1, 0, 0, 0, 0, 0, -1, 1, 1, 0, 0, 0},
+    {1, 0, 0, 0, 0, 0, -1, 1, 0, 0, 0, 0}, // key 40
+    {1, 0, 0, 0, 0, -1, -1, 1, 0, 0, 0, 0},
+    {1, 0, 0, 0, 0, -1, -1, 1, 0, 0, 0, 0},
+    {1, 0, 0, 0, -1, -1, -1, 1, 0, 0, 0, 0},
+    {1, 0, 0, 0, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, -1, 0, 0, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, -1, 0, 0, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, -1, 0, -1, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, -1, 0, -1, -1, -1, -1, 1, 0, 0, 0, 0}, // key 48
+    {0, -1, -1, -1, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, -1, -1, -1, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, -1, -1, -1, -1, -1, 0, 0, 0, 0, 0, 0},
+    {0, -1, -1, -1, -1, -1, 0, 0, 0, 0, 0, 0},
+    {0, -1, -1, -1, -1, -1, 0, 0, 0, 0, -1, 0},
+    {0, -1, -1, -1, -1, -1, 0, 0, 0, 0, -1, 0},
+    {0, -1, -1, -1, -1, -1, 0, 0, 0, 0, -1, 0},
+    {0, -1, -1, -1, -1, -1, 0, 0, 0, 0, -1, 0}, // key 56
+    {0, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 1},
+    {0, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 1},
+    {0, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 1},
+    {0, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 1},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 1},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 1},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+  },
+  { // 02: SLEEP_TWITCH
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0}, // key 00
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 1},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 1},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 1},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 1}, // key 08
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 1},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 1},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0}, // key 16
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0}, // key 24
+    {1, 1, 1, 1, 1, 0, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 0, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 0, 0, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 0, 0, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0},
+    {1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0},
+    {1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0},
+    {1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0}, // key 32
+    {1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0},
+    {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {1, 0, 0, 0, 0, 0, -1, 1, 0, 0, 0, 0},
+    {1, 0, 0, 0, 0, -1, -1, 1, 0, 0, 0, 0},
+    {1, 0, 0, 0, 0, -1, -1, 1, 0, 0, 0, 0},
+    {0, 0, 0, 0, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, 0, 0, 0, -1, -1, -1, 1, 0, 0, 0, 0}, // key 40
+    {0, -1, 0, 0, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, -1, 0, -1, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, -1, 0, -1, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, -1, -1, -1, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, -1, -1, -1, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, -1, -1, -1, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, -1, -1, -1, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, -1, -1, -1, -1, -1, 0, 0, 0, 0, -1, 0}, // key 48
+    {0, -1, -1, -1, -1, -1, 0, 0, 0, 0, -1, 0},
+    {0, -1, -1, -1, -1, -1, 0, 0, 0, 0, -1, 0},
+    {0, -1, -1, -1, -1, -1, 0, 0, 0, 0, -1, 0},
+    {0, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {0, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {0, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 1},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 1},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 1}, // key 56
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 1},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 1},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 1},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+  },
+  { // 03: SLEEP_DREAM
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0}, // key 00
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 1},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 1},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 1},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 1},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 1},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0}, // key 08
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0}, // key 16
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 0, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 0, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 0, 0, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0}, // key 24
+    {1, 1, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0},
+    {1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0},
+    {1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0},
+    {1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0},
+    {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // key 32
+    {0, 0, 0, 0, 0, -1, -1, 1, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, -1, -1, 1, 0, 0, 0, 0},
+    {0, 0, 0, 0, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, 0, 0, 0, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, -1, 0, 0, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, -1, 0, -1, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, -1, 0, -1, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, -1, -1, -1, -1, -1, -1, 1, 0, 0, 0, 0}, // key 40
+    {0, -1, -1, -1, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, -1, -1, -1, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, -1, -1, -1, -1, -1, -1, 1, 0, 0, -1, 0},
+    {0, -1, -1, -1, -1, -1, -1, 1, 0, 0, -1, 0},
+    {0, -1, -1, -1, -1, -1, 0, 0, 0, 0, -1, 0},
+    {0, -1, -1, -1, -1, -1, 0, 0, 0, 0, -1, 0},
+    {0, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {0, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0}, // key 48
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 1},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 1},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 1},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 1},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 1}, // key 56
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 1},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, 0, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, 0, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, 0, 0, 0, 0, -1, 0, -1, 0},
+  },
+  { // 04: SLEEP_MICRO_BLINK
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 1}, // key 00
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 1},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 1},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 1},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 1},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 1},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0}, // key 08
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0}, // key 16
+    {1, 1, 1, 1, 1, 0, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 0, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 0, 0, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0},
+    {1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0},
+    {1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0},
+    {1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0},
+    {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // key 24
+    {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, -1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, -1, -1, 1, 0, 0, 0, 0},
+    {0, 0, 0, 0, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, -1, 0, 0, -1, -1, -1, 1, 0, 0, 0, 0}, // key 32
+    {0, -1, 0, -1, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, -1, 0, -1, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, -1, -1, -1, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, -1, -1, -1, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, -1, -1, -1, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, -1, -1, -1, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, -1, -1, -1, -1, -1, -1, 1, 0, 0, -1, 0},
+    {0, -1, -1, -1, -1, -1, -1, 1, 0, 0, -1, 0}, // key 40
+    {0, -1, -1, -1, -1, -1, -1, 1, 0, 0, -1, 0},
+    {0, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {0, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0}, // key 48
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 1},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 1},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 1},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 1},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 1},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 1},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0}, // key 56
+    {-1, -1, -1, -1, -1, 0, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, 0, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, 0, 0, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, 0, 0, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, 0, 0, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, 0, 0, 1, -1, -1, 0, -1, 0},
+    {-1, -1, -1, -1, 0, 0, 1, -1, -1, 0, -1, 0},
+  },
+  { // 05: SLEEP_Z_BOB
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 1}, // key 00
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 1},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 1},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 1},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0}, // key 08
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 0, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 0, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0}, // key 16
+    {1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0},
+    {1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0},
+    {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // key 24
+    {0, 0, 0, 0, 0, -1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, -1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, -1, 0, 0, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, -1, 0, -1, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, -1, 0, -1, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, -1, -1, -1, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, -1, -1, -1, -1, -1, -1, 1, 0, 0, 0, 0}, // key 32
+    {0, -1, -1, -1, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, -1, -1, -1, -1, -1, -1, 1, 0, 0, -1, 0},
+    {0, -1, -1, -1, -1, -1, -1, 1, 0, 0, -1, 0},
+    {0, -1, -1, -1, -1, -1, -1, 1, -1, 0, -1, 0},
+    {0, -1, -1, -1, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0}, // key 40
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 1},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 1}, // key 48
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 1},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 1},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 1},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 1},
+    {-1, -1, -1, -1, -1, 0, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, 0, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, 0, 0, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, 0, 0, 0, 0, -1, 0, -1, 0}, // key 56
+    {-1, -1, -1, -1, 0, 0, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, 0, 0, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, 0, 0, 1, -1, -1, 0, -1, 0},
+    {-1, -1, -1, -1, 0, 0, 1, -1, -1, 0, -1, 0},
+    {-1, -1, -1, 0, 0, 0, 1, -1, -1, 0, -1, 0},
+    {-1, -1, -1, 0, 0, 0, 1, -1, -1, 0, -1, 0},
+    {-1, 0, 0, 0, 0, 0, 1, -1, -1, 0, -1, 0},
+  },
+  { // 06: SLEEP_TUCK
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 1}, // key 00
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0}, // key 08
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 0, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0},
+    {1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0},
+    {1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // key 16
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, -1, 0, 0, 0, 0, 0, 0},
+    {0, -1, 0, 0, -1, -1, 0, 0, 0, 0, 0, 0},
+    {0, -1, 0, -1, -1, -1, -1, 1, 0, 0, 0, 0}, // key 24
+    {0, -1, 0, -1, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, -1, -1, -1, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, -1, -1, -1, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, -1, -1, -1, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, -1, -1, -1, -1, -1, -1, 1, 0, 0, -1, 0},
+    {0, -1, -1, -1, -1, -1, -1, 1, 0, 0, -1, 0},
+    {0, -1, -1, -1, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, -1, 1, -1, 0, -1, 0}, // key 32
+    {-1, -1, -1, -1, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0}, // key 40
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 1},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 1},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 1},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 1}, // key 48
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 1},
+    {-1, -1, -1, -1, -1, 0, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, 0, 0, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, 0, 0, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, 0, 0, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, 0, 0, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, 0, 0, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, 0, 0, 0, 1, -1, -1, 0, -1, 0}, // key 56
+    {-1, -1, -1, 0, 0, 0, 1, -1, -1, 0, -1, 0},
+    {-1, 0, 0, 0, 0, 0, 1, -1, -1, 0, -1, 0},
+    {-1, 0, 0, 0, 0, 0, 1, -1, -1, 0, -1, 0},
+    {-1, 0, 0, 0, 0, 0, 1, -1, -1, 0, -1, 0},
+    {-1, 0, 0, 0, 0, 0, 1, -1, -1, 0, -1, 0},
+    {-1, 0, 0, 0, 0, 1, 1, -1, -1, 0, 0, 0},
+    {-1, 0, 0, 0, 1, 1, 1, -1, -1, 0, 0, 0},
+  },
+  { // 07: SLEEP_DROWSY
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0}, // key 00
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 0, 1, 0, 0, 0, 1, 0, 1, 0},
+    {1, 1, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0},
+    {1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // key 08
+    {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // key 16
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, -1, 0, 0, 0, 0, 0, 0},
+    {0, -1, 0, 0, -1, -1, 0, 0, 0, 0, 0, 0},
+    {0, -1, 0, -1, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, -1, 0, -1, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, -1, -1, -1, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, -1, -1, -1, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, -1, -1, -1, -1, -1, -1, 1, 0, 0, -1, 0}, // key 24
+    {0, -1, -1, -1, -1, -1, -1, 1, 0, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0}, // key 32
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0}, // key 40
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 1},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 1},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 1},
+    {-1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 1},
+    {-1, -1, -1, -1, -1, 0, 0, 0, -1, 0, -1, 1},
+    {-1, -1, -1, -1, 0, 0, 0, 0, -1, 0, -1, 1},
+    {-1, -1, -1, -1, 0, 0, 0, 0, -1, 0, -1, 0}, // key 48
+    {-1, -1, -1, -1, 0, 0, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, 0, 0, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, -1, 0, 0, 0, 0, -1, 0, -1, 0},
+    {-1, -1, -1, 0, 0, 0, 1, -1, -1, 0, -1, 0},
+    {-1, -1, 0, 0, 0, 0, 1, -1, -1, 0, -1, 0},
+    {-1, 0, 0, 0, 0, 0, 1, -1, -1, 0, -1, 0},
+    {-1, 0, 0, 0, 0, 0, 1, -1, -1, 0, -1, 0},
+    {-1, 0, 0, 0, 0, 0, 1, -1, -1, 0, -1, 0}, // key 56
+    {-1, 0, 0, 0, 0, 0, 1, -1, -1, 0, 0, 0},
+    {-1, 0, 0, 0, 0, 1, 1, -1, -1, 0, 0, 0},
+    {-1, 0, 0, 0, 1, 1, 1, -1, -1, 0, 0, 0},
+    {-1, 0, 0, 0, 1, 1, 1, -1, -1, 0, 0, 0},
+    {-1, 0, 0, 0, 1, 1, 1, -1, 0, 0, 0, 0},
+    {-1, 0, 0, 0, 1, 1, 1, -1, 0, 0, 0, 0},
+    {-1, 1, 0, 0, 1, 1, 1, -1, 0, 0, 0, 0},
+  },
+  { // 08: CONNECTED_IDLE
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0}, // key 00
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 0, 1, 0, 1, -1, 1, 0, 0, 0},
+    {1, 1, 1, 0, 1, 0, 1, -1, 1, 0, 0, 0},
+    {1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0},
+    {1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, -1, 0, 0, 0, 0, 0, 0, -1, 0}, // key 08
+    {0, 0, -1, -1, 0, 0, 0, 0, 0, 0, -1, 0},
+    {0, 0, -1, -1, 0, -1, 0, 0, 0, 0, -1, 0},
+    {0, 0, -1, -1, 0, -1, -1, 1, 0, 0, -1, 0},
+    {0, -1, -1, -1, -1, -1, -1, 1, 0, 0, -1, 0},
+    {0, -1, -1, -1, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -1, -2, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -1, -2, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -2, -2, -1, -1, -1, 1, -1, 0, -1, 0}, // key 16
+    {-1, -1, -2, -2, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -2, -2, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -2, -2, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -2, -2, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -2, -2, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -2, -2, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -2, -1, -3, -3, -1, 1, -2, 0, -1, 0},
+    {-2, -1, -2, -1, -5, -5, -1, 1, -2, 0, -1, 0}, // key 24
+    {-2, -1, -1, -1, -5, -5, -1, 1, -2, 0, 0, 0},
+    {-2, -1, -1, -1, -5, -5, -1, 1, -2, 0, 0, 1},
+    {-2, -1, -1, -1, -3, -3, -1, 1, -2, 0, 0, 1},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -2, 0, 0, 1},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -2, 0, 0, 1},
+    {-2, -1, -1, 0, -1, -1, -1, 1, -2, 0, 0, 0},
+    {-2, -1, -1, 0, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-2, -1, 0, 0, -1, -1, -1, 1, -2, 0, 1, 0}, // key 32
+    {-2, -1, 0, 0, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-2, -1, 0, 0, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-2, -1, 0, 1, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-2, -1, 0, 1, -1, -1, 0, 0, -2, 0, 1, 0},
+    {-2, -1, 1, 1, -1, -1, 0, 0, -2, 0, 1, 0},
+    {-2, -1, 1, 1, -1, 0, 0, 0, -2, 0, 1, 0},
+    {-2, -1, 1, 1, -1, 0, 0, 0, -1, 0, 1, 0},
+    {-2, 0, 1, 1, 0, 0, 0, 0, -1, 0, 1, 0}, // key 40
+    {-2, 0, 1, 1, 0, 0, 0, 0, -1, 0, 1, 0},
+    {-1, 0, 1, 2, 0, 0, 0, 0, -1, 0, 1, 0},
+    {-1, 0, 1, 2, 0, 0, 1, -1, -1, 0, 1, 0},
+    {-1, 0, 2, 2, 0, 0, 1, -1, -1, 0, 1, 0},
+    {-1, 0, 2, 2, 0, 1, 1, -1, -1, 0, 1, 0},
+    {-1, 0, 2, 2, 0, 1, 1, -1, -1, 0, 1, 0},
+    {-1, 1, 2, 2, 1, 1, 1, -1, -1, 0, 1, 0},
+    {-1, 1, 2, 2, 1, 1, 1, -1, 0, 0, 0, 0}, // key 48
+    {-1, 1, 2, 2, 1, 1, 1, -1, 0, 0, 0, 0},
+    {-1, 1, 2, 2, 1, 1, 1, -1, 0, 0, 0, 0},
+    {-1, 1, 2, 1, 1, 1, 1, -1, 0, 0, 0, 0},
+    {0, 1, 1, 1, 1, 1, 1, -1, 0, 0, 0, 0},
+    {0, 1, 1, 1, 1, 1, 1, -1, 0, 0, 0, 0},
+    {0, 1, 1, 1, 1, 1, 1, -1, 0, 0, -1, 0},
+    {0, 1, 1, 1, 1, 1, 1, -1, 0, 0, -1, 0},
+    {0, 1, 1, 1, 1, 1, 1, -1, 1, 0, -1, 0}, // key 56
+    {0, 1, 1, 1, 1, 1, 1, -1, 1, 0, -1, 0},
+    {0, 1, 1, 0, 1, 1, 1, -1, 1, 0, -1, 1},
+    {0, 1, 0, 0, 1, 1, 1, -1, 1, 0, -1, 1},
+    {1, 1, 0, 0, 1, 1, 1, -1, 1, 0, -1, 1},
+    {1, 1, 0, 0, 1, 1, 1, -1, 1, 0, -1, 1},
+    {1, 1, 0, 0, 1, 1, 1, -1, 1, 0, -1, 0},
+    {1, 1, 0, -1, 1, 1, 1, -1, 1, 0, -1, 0},
+  },
+  { // 09: CONNECTED_HAPPY_BOUNCE
+    {1, 1, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0}, // key 00
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, -1, -1, 0, -1, 0, 0, 0, 0, -1, 0},
+    {0, 0, -1, -1, 0, -1, 0, 0, 0, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, -1, 1, 0, 0, -1, 0}, // key 08
+    {-1, -1, -1, -1, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -1, -2, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -1, -2, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -2, -2, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -2, -2, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -2, -2, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -2, -2, -1, -1, -1, 1, -1, 0, -1, 0}, // key 16
+    {-2, -1, -2, -2, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -2, -2, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -2, -2, -1, -1, -1, 1, -2, 0, -1, 0},
+    {-2, -1, -2, -1, -1, -1, -1, 1, -2, 0, -1, 0},
+    {-2, -1, -2, -1, -1, -1, -1, 1, -2, 0, -1, 0},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -2, 0, -1, 0},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -2, 0, 0, 0},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -2, 0, 0, 0}, // key 24
+    {-2, -1, -1, -1, -1, -1, -1, 1, -2, 0, 0, 1},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -2, 0, 0, 1},
+    {-2, -1, -1, 0, -1, -1, -1, 1, -2, 0, 0, 1},
+    {-2, -1, -1, 0, -1, -1, -1, 1, -2, 0, 0, 0},
+    {-2, -1, 0, 0, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-2, -1, 0, 0, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-1, -1, 0, 0, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-1, -1, 0, 1, -3, -3, 0, 0, -2, 0, 1, 0}, // key 32
+    {-1, -1, 0, 1, -5, -5, 0, 0, -2, 0, 1, 0},
+    {-1, -1, 1, 1, -5, -4, 0, 0, -2, 0, 1, 0},
+    {-1, -1, 1, 1, -5, -4, 0, 0, -1, 0, 1, 0},
+    {-1, 0, 1, 1, -2, -2, 0, 0, -1, 0, 1, 0},
+    {-1, 0, 1, 1, 0, 0, 0, 0, -1, 0, 1, 0},
+    {-1, 0, 1, 1, 0, 0, 0, 0, -1, 0, 1, 0},
+    {0, 0, 1, 2, 0, 0, 0, 0, -1, 0, 1, 0},
+    {0, 0, 1, 2, 0, 0, 1, -1, -1, 0, 1, 0}, // key 40
+    {0, 0, 2, 2, 0, 0, 1, -1, -1, 0, 1, 0},
+    {0, 0, 2, 2, 0, 1, 1, -1, -1, 0, 1, 0},
+    {0, 0, 2, 2, 0, 1, 1, -1, -1, 0, 1, 0},
+    {0, 1, 2, 2, 1, 1, 1, -1, 0, 0, 1, 0},
+    {0, 1, 2, 2, 1, 1, 1, -1, 0, 0, 1, 0},
+    {1, 1, 2, 2, 1, 1, 1, -1, 0, 0, 0, 0},
+    {1, 1, 2, 2, 1, 1, 1, -1, 0, 0, 0, 0},
+    {1, 1, 2, 1, 1, 1, 1, -1, 0, 0, 0, 0}, // key 48
+    {1, 1, 2, 1, 1, 1, 1, -1, 0, 0, 0, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 0, 0, 0, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 0, 0, 0, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, -1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, -1, 0},
+    {2, 1, 1, 1, 1, 1, 1, -1, 1, 0, -1, 0},
+    {2, 1, 1, 0, 1, 1, 1, -1, 1, 0, -1, 0},
+    {2, 1, 1, 0, 1, 1, 1, -1, 1, 0, -1, 0}, // key 56
+    {2, 1, 0, 0, 1, 1, 1, -1, 1, 0, -1, 1},
+    {2, 1, 0, 0, 1, 1, 1, -1, 1, 0, -1, 1},
+    {2, 1, 0, 0, 1, 1, 1, -1, 1, 0, -1, 1},
+    {2, 1, 0, -1, 1, 1, 1, -1, 1, 0, -1, 0},
+    {2, 1, 0, -1, 1, 1, 1, -1, 2, 0, -1, 0},
+    {2, 1, -1, -1, 1, 1, 1, -1, 2, 0, -1, 0},
+    {2, 1, -1, -1, 1, 1, 1, -1, 2, 0, -1, 0},
+  },
+  { // 10: CONNECTED_BLINK
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // key 00
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, -1, 0, -1, 0, 0, 0, 0, 0, 0},
+    {-1, 0, -1, -1, 0, -1, 0, 0, 0, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, -1, 1, -1, 0, -1, 0}, // key 08
+    {-1, -1, -1, -2, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -2, -2, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -2, -2, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -2, -2, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -2, -2, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -2, -2, -1, -1, -1, 1, -2, 0, -1, 0},
+    {-2, -1, -2, -2, -1, -1, -1, 1, -2, 0, -1, 0},
+    {-2, -1, -2, -2, -1, -1, -1, 1, -2, 0, -1, 0}, // key 16
+    {-2, -1, -2, -1, -1, -1, -1, 1, -2, 0, -1, 0},
+    {-2, -1, -2, -1, -1, -1, -1, 1, -2, 0, -1, 0},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -2, 0, -1, 0},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -2, 0, -1, 0},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -2, 0, 0, 0},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -2, 0, 0, 0},
+    {-1, -1, -1, -1, -1, -1, -1, 1, -2, 0, 0, 1},
+    {-1, -1, -1, 0, -1, -1, -1, 1, -2, 0, 0, 1}, // key 24
+    {-1, -1, -1, 0, -1, -1, -1, 1, -2, 0, 0, 1},
+    {-1, -1, 0, 0, -1, -1, -1, 1, -2, 0, 0, 0},
+    {-1, -1, 0, 0, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-1, -1, 0, 0, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-1, -1, 0, 0, -1, -1, 0, 0, -2, 0, 1, 0},
+    {0, -1, 0, 1, -1, -1, 0, 0, -1, 0, 1, 0},
+    {0, -1, 1, 1, -1, 0, 0, 0, -1, 0, 1, 0},
+    {0, -1, 1, 1, -1, 0, 0, 0, -1, 0, 1, 0}, // key 32
+    {0, 0, 1, 1, 0, 0, 0, 0, -1, 0, 1, 0},
+    {0, 0, 1, 1, 0, 0, 0, 0, -1, 0, 1, 0},
+    {0, 0, 1, 1, 0, 0, 0, 0, -1, 0, 1, 0},
+    {1, 0, 1, 2, 0, 0, 0, 0, -1, 0, 1, 0},
+    {1, 0, 1, 2, 0, 0, 1, -1, -1, 0, 1, 0},
+    {1, 0, 2, 2, 0, 1, 1, -1, -1, 0, 1, 0},
+    {1, 0, 2, 2, 0, 1, 1, -1, -1, 0, 1, 0},
+    {1, 1, 2, 2, 1, 1, 1, -1, 0, 0, 1, 0}, // key 40
+    {1, 1, 2, 2, -1, -1, 1, -1, 0, 0, 1, 0},
+    {1, 1, 2, 2, -3, -3, 1, -1, 0, 0, 1, 0},
+    {2, 1, 2, 2, -3, -3, 1, -1, 0, 0, 1, 0},
+    {2, 1, 2, 2, -3, -3, 1, -1, 0, 0, 0, 0},
+    {2, 1, 2, 1, -1, -1, 1, -1, 0, 0, 0, 0},
+    {2, 1, 2, 1, 1, 1, 1, -1, 0, 0, 0, 0},
+    {2, 1, 1, 1, 1, 1, 1, -1, 0, 0, 0, 0},
+    {2, 1, 1, 1, 1, 1, 1, -1, 1, 0, 0, 0}, // key 48
+    {2, 1, 1, 1, 1, 1, 1, -1, 1, 0, -1, 0},
+    {2, 1, 1, 1, 1, 1, 1, -1, 1, 0, -1, 0},
+    {2, 1, 1, 1, 1, 1, 1, -1, 1, 0, -1, 0},
+    {2, 1, 1, 0, 1, 1, 1, -1, 1, 0, -1, 0},
+    {2, 1, 1, 0, 1, 1, 1, -1, 1, 0, -1, 0},
+    {2, 1, 0, 0, 1, 1, 1, -1, 1, 0, -1, 0},
+    {1, 1, 0, 0, 1, 1, 1, -1, 1, 0, -1, 1},
+    {1, 1, 0, 0, 1, 1, 1, -1, 1, 0, -1, 1}, // key 56
+    {1, 1, 0, -1, 1, 1, 1, -1, 2, 0, -1, 1},
+    {1, 1, 0, -1, 1, 1, 1, -1, 2, 0, -1, 0},
+    {1, 1, -1, -1, 1, 1, 1, -1, 2, 0, -1, 0},
+    {1, 1, -1, -1, 1, 1, 1, -1, 2, 0, -1, 0},
+    {1, 1, -1, -1, 1, 1, 0, 0, 2, 0, -1, 0},
+    {0, 1, -1, -1, 1, 1, 0, 0, 2, 1, -1, 0},
+    {0, 1, -1, -1, 1, 1, 0, 0, 2, 1, -1, 0},
+  },
+  { // 11: CONNECTED_GLANCE_LEFT
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // key 00
+    {0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 1, 1, 0, 1, 0, 0, 0, 0, 1, 0},
+    {0, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 1},
+    {1, 1, 1, 2, 1, 1, 1, -1, 1, 0, 1, 1}, // key 08
+    {1, 1, 1, 2, 1, 1, 1, -1, 1, 0, 1, 1},
+    {1, 1, 2, 2, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 2, 2, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 2, 2, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 2, 2, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 2, 2, 1, 1, 1, -1, 2, 0, 1, 0},
+    {2, 1, 2, 2, 1, 1, 1, -1, 2, 0, 1, 0},
+    {2, 1, 2, 2, 1, 1, 1, -1, 2, 1, 1, 0}, // key 16
+    {2, 1, 2, 1, 1, 1, 1, -1, 2, 1, 1, 0},
+    {2, 1, 2, 1, 1, 1, 1, -1, 2, 1, 1, 0},
+    {2, 1, 1, 1, 1, 1, 1, -1, 2, 1, 1, 0},
+    {2, 1, 1, 1, 1, 1, 1, -1, 2, 1, 0, 0},
+    {2, 1, 1, 1, 1, 1, 1, -1, 2, 1, 0, 0},
+    {2, 1, 1, 1, 1, 1, 1, -1, 2, 1, 0, 0},
+    {2, 1, 1, 1, 1, 1, 1, -1, 2, 1, 0, 0},
+    {2, 1, 1, 0, 1, 1, 1, -1, 2, 1, 0, 0}, // key 24
+    {2, 1, 1, 0, 1, 1, 1, -1, 2, 1, 0, 0},
+    {2, 1, 0, 0, 1, 1, 1, -1, 2, 1, -1, 0},
+    {2, 1, 0, 0, 1, 1, 1, -1, 2, 1, -1, 0},
+    {2, 1, 0, 0, 1, 1, 1, -1, 2, 1, -1, 0},
+    {2, 1, 0, -1, 1, 1, 0, 0, 2, 1, -1, 0},
+    {2, 1, 0, -1, 1, 0, 0, 0, 1, 1, -1, 0},
+    {2, 1, -1, -1, 1, 0, 0, 0, 1, 0, -1, 0},
+    {1, 0, -1, -1, 0, 0, 0, 0, 1, 0, -1, 0}, // key 32
+    {1, 0, -1, -1, 0, 0, 0, 0, 1, 0, -1, 0},
+    {1, 0, -1, -1, 0, 0, 0, 0, 1, 0, -1, 0},
+    {1, 0, -1, -1, 0, 0, 0, 0, 1, 0, -1, 0},
+    {1, 0, -1, -2, 0, 0, -1, 1, 1, 0, -1, 0},
+    {1, 0, -1, -2, 0, 0, -1, 1, 1, 0, -1, 0},
+    {1, 0, -2, -2, 0, -1, -1, 1, 1, 0, -1, 0},
+    {1, 0, -2, -2, 0, -1, -1, 1, 0, 0, -1, 1},
+    {1, -1, -2, -2, -1, -1, -1, 1, 0, 0, -1, 1}, // key 40
+    {1, -1, -2, -2, -1, -1, -1, 1, 0, 0, -1, 1},
+    {0, -1, -2, -2, -1, -1, -1, 1, 0, 0, -1, 0},
+    {0, -1, -2, -2, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, -1, -2, -2, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, -1, -2, -1, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, -1, -2, -1, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, -1, -1, -1, -1, -1, -1, 1, -1, 0, 0, 0},
+    {0, -1, -1, -1, -1, -1, -1, 1, -1, 0, 0, 0}, // key 48
+    {0, -1, -1, -1, -1, -1, -1, 1, -1, 0, 1, 0},
+    {-1, -1, -1, -1, -3, -3, -1, 1, -1, 0, 1, 0},
+    {-1, -1, -1, -1, -5, -5, -1, 1, -1, 0, 1, 0},
+    {-1, -1, -1, 0, -5, -5, -1, 1, -1, 0, 1, 0},
+    {-1, -1, -1, 0, -5, -5, -1, 1, -1, 0, 1, 0},
+    {-1, -1, 0, 0, -3, -3, -1, 1, -1, 0, 1, 0},
+    {-1, -1, 0, 0, -1, -1, -1, 1, -1, 0, 1, 0},
+    {-1, -1, 0, 0, -1, -1, -1, 1, -1, 0, 1, 0}, // key 56
+    {-1, -1, 0, 1, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-1, -1, 0, 1, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-1, -1, 1, 1, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-1, -1, 1, 1, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-2, -1, 1, 1, -1, -1, 0, 0, -2, 0, 1, 0},
+    {-2, -1, 1, 1, -1, -1, 0, 0, -2, 0, 1, 0},
+    {-2, -1, 1, 1, -1, -1, 0, 0, -2, 0, 1, 0},
+  },
+  { // 12: CONNECTED_GLANCE_RIGHT
+    {1, 0, 1, 1, 0, 1, 0, 0, 1, 0, 0, 0}, // key 00
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 1},
+    {1, 1, 1, 2, 1, 1, 1, -1, 1, 0, 1, 1},
+    {1, 1, 2, 2, 1, 1, 1, -1, 1, 0, 1, 1},
+    {1, 1, 2, 2, 1, 1, 1, -1, 1, 0, 1, 1}, // key 08
+    {2, 1, 2, 2, 1, 1, 1, -1, 1, 0, 1, 0},
+    {2, 1, 2, 2, 1, 1, 1, -1, 2, 0, 1, 0},
+    {2, 1, 2, 2, 1, 1, 1, -1, 2, 1, 1, 0},
+    {2, 1, 2, 2, 1, 1, 1, -1, 2, 1, 1, 0},
+    {2, 1, 2, 2, 1, 1, 1, -1, 2, 1, 1, 0},
+    {2, 1, 2, 1, 1, 1, 1, -1, 2, 1, 1, 0},
+    {2, 1, 2, 1, 1, 1, 1, -1, 2, 1, 1, 0},
+    {2, 1, 1, 1, 1, 1, 1, -1, 2, 1, 1, 0}, // key 16
+    {2, 1, 1, 1, 1, 1, 1, -1, 2, 1, 1, 0},
+    {2, 1, 1, 1, 1, 1, 1, -1, 2, 1, 0, 0},
+    {2, 1, 1, 1, 1, 1, 1, -1, 2, 1, 0, 0},
+    {2, 1, 1, 1, 1, 1, 1, -1, 2, 1, 0, 0},
+    {2, 1, 1, 0, 1, 1, 1, -1, 2, 1, 0, 0},
+    {2, 1, 1, 0, 1, 1, 1, -1, 2, 1, 0, 0},
+    {1, 1, 0, 0, 1, 1, 1, -1, 2, 1, 0, 0},
+    {1, 1, 0, 0, 1, 1, 1, -1, 2, 1, -1, 0}, // key 24
+    {1, 1, 0, 0, 1, 1, 1, -1, 2, 1, -1, 0},
+    {1, 1, 0, -1, 1, 1, 0, 0, 1, 0, -1, 0},
+    {1, 1, 0, -1, 1, 0, 0, 0, 1, 0, -1, 0},
+    {1, 1, -1, -1, 1, 0, 0, 0, 1, 0, -1, 0},
+    {1, 0, -1, -1, 0, 0, 0, 0, 1, 0, -1, 0},
+    {1, 0, -1, -1, 0, 0, 0, 0, 1, 0, -1, 0},
+    {0, 0, -1, -1, 0, 0, 0, 0, 1, 0, -1, 0},
+    {0, 0, -1, -1, 0, 0, 0, 0, 1, 0, -1, 0}, // key 32
+    {0, 0, -1, -2, 0, 0, -1, 1, 1, 0, -1, 0},
+    {0, 0, -1, -2, 0, -1, -1, 1, 1, 0, -1, 0},
+    {0, 0, -2, -2, 0, -1, -1, 1, 0, 0, -1, 0},
+    {0, -1, -2, -2, -1, -1, -1, 1, 0, 0, -1, 0},
+    {0, -1, -2, -2, -1, -1, -1, 1, 0, 0, -1, 1},
+    {-1, -1, -2, -2, -1, -1, -1, 1, 0, 0, -1, 1},
+    {-1, -1, -2, -2, -1, -1, -1, 1, 0, 0, -1, 1},
+    {-1, -1, -2, -2, -1, -1, -1, 1, 0, 0, -1, 1}, // key 40
+    {-1, -1, -2, -2, -1, -1, -1, 1, 0, 0, 0, 0},
+    {-1, -1, -2, -1, -1, -1, -1, 1, 0, 0, 0, 0},
+    {-1, -1, -2, -1, -1, -1, -1, 1, -1, 0, 0, 0},
+    {-1, -1, -1, -1, -1, -1, -1, 1, -1, 0, 0, 0},
+    {-1, -1, -1, -1, -1, -1, -1, 1, -1, 0, 0, 0},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -1, 0, 0, 0},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -1, 0, 1, 0},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -1, 0, 1, 0}, // key 48
+    {-2, -1, -1, 0, -1, -1, -1, 1, -1, 0, 1, 0},
+    {-2, -1, -1, 0, -1, -1, -1, 1, -1, 0, 1, 0},
+    {-2, -1, 0, 0, -1, -1, -1, 1, -1, 0, 1, 0},
+    {-2, -1, 0, 0, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-2, -1, 0, 0, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-2, -1, 0, 1, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-2, -1, 0, 1, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-2, -1, 1, 1, -1, -1, -1, 1, -2, 0, 1, 0}, // key 56
+    {-2, -1, 1, 1, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-2, -1, 1, 1, -1, -1, 0, 0, -2, 0, 1, 0},
+    {-2, -1, 1, 1, -3, -3, 0, 0, -2, 0, 1, 0},
+    {-1, -1, 1, 1, -5, -5, 0, 0, -2, 0, 1, 0},
+    {-1, -1, 1, 2, -5, -5, 0, 0, -2, 0, 1, 0},
+    {-1, -1, 1, 2, -5, -4, 0, 0, -2, 0, 1, 0},
+    {-1, -1, 2, 2, -3, -2, 0, 0, -2, 0, 1, 0},
+  },
+  { // 13: CONNECTED_SLOW_BLINK
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0}, // key 00
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 2, 1, 1, 1, -1, 1, 0, 1, 0},
+    {2, 1, 1, 2, -1, -1, 1, -1, 1, 0, 1, 1},
+    {2, 1, 2, 2, -3, -3, 1, -1, 2, 0, 1, 1},
+    {2, 1, 2, 2, -3, -3, 1, -1, 2, 0, 1, 1},
+    {2, 1, 2, 2, -3, -3, 1, -1, 2, 1, 1, 0},
+    {2, 1, 2, 2, -1, -1, 1, -1, 2, 1, 1, 0}, // key 08
+    {2, 1, 2, 2, 1, 1, 1, -1, 2, 1, 1, 0},
+    {2, 1, 2, 2, 1, 1, 1, -1, 2, 1, 1, 0},
+    {2, 1, 2, 1, 1, 1, 1, -1, 2, 1, 1, 0},
+    {2, 1, 2, 1, 1, 1, 1, -1, 2, 1, 1, 0},
+    {2, 1, 1, 1, 1, 1, 1, -1, 2, 1, 1, 0},
+    {2, 1, 1, 1, 1, 1, 1, -1, 2, 1, 1, 0},
+    {2, 1, 1, 1, 1, 1, 1, -1, 2, 1, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 2, 1, 0, 0}, // key 16
+    {1, 1, 1, 1, 1, 1, 1, -1, 2, 1, 0, 0},
+    {1, 1, 1, 0, 1, 1, 1, -1, 2, 1, 0, 0},
+    {1, 1, 1, 0, 1, 1, 1, -1, 2, 1, 0, 0},
+    {1, 1, 0, 0, 1, 1, 1, -1, 2, 1, 0, 0},
+    {1, 1, 0, 0, 1, 1, 1, -1, 1, 1, 0, 0},
+    {1, 1, 0, 0, 1, 1, 0, 0, 1, 0, -1, 0},
+    {0, 1, 0, 0, 1, 0, 0, 0, 1, 0, -1, 0},
+    {0, 1, 0, -1, 1, 0, 0, 0, 1, 0, -1, 0}, // key 24
+    {0, 0, -1, -1, 0, 0, 0, 0, 1, 0, -1, 0},
+    {0, 0, -1, -1, 0, 0, 0, 0, 1, 0, -1, 0},
+    {0, 0, -1, -1, 0, 0, 0, 0, 1, 0, -1, 0},
+    {0, 0, -1, -1, 0, 0, 0, 0, 1, 0, -1, 0},
+    {-1, 0, -1, -1, 0, 0, 0, 0, 1, 0, -1, 0},
+    {-1, 0, -1, -1, 0, 0, -1, 1, 1, 0, -1, 0},
+    {-1, 0, -1, -2, 0, -1, -1, 1, 0, 0, -1, 0},
+    {-1, 0, -2, -2, 0, -1, -1, 1, 0, 0, -1, 0}, // key 32
+    {-1, -1, -2, -2, -1, -1, -1, 1, 0, 0, -1, 0},
+    {-1, -1, -2, -2, -1, -1, -1, 1, 0, 0, -1, 0},
+    {-1, -1, -2, -2, -1, -1, -1, 1, 0, 0, -1, 0},
+    {-2, -1, -2, -2, -1, -1, -1, 1, 0, 0, -1, 1},
+    {-2, -1, -2, -2, -1, -1, -1, 1, 0, 0, -1, 1},
+    {-2, -1, -2, -2, -1, -1, -1, 1, 0, 0, -1, 1},
+    {-2, -1, -2, -1, -1, -1, -1, 1, -1, 0, 0, 0},
+    {-2, -1, -2, -1, -1, -1, -1, 1, -1, 0, 0, 0}, // key 40
+    {-2, -1, -1, -1, -1, -1, -1, 1, -1, 0, 0, 0},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -1, 0, 0, 0},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -1, 0, 0, 0},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -1, 0, 0, 0},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -1, 0, 1, 0},
+    {-2, -1, -1, 0, -1, -1, -1, 1, -1, 0, 1, 0},
+    {-2, -1, -1, 0, -1, -1, -1, 1, -1, 0, 1, 0},
+    {-1, -1, 0, 0, -1, -1, -1, 1, -2, 0, 1, 0}, // key 48
+    {-1, -1, 0, 0, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-1, -1, 0, 0, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-1, -1, 0, 0, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-1, -1, 0, 1, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-1, -1, 1, 1, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-1, -1, 1, 1, -1, -1, 0, 0, -2, 0, 1, 0},
+    {0, -1, 1, 1, -1, -1, 0, 0, -2, 0, 1, 0},
+    {0, -1, 1, 1, -1, -1, 0, 0, -2, 0, 1, 0}, // key 56
+    {0, -1, 1, 1, -1, -1, 0, 0, -2, 0, 1, 0},
+    {0, -1, 1, 2, -1, -1, 0, 0, -2, 0, 1, 0},
+    {0, -1, 1, 2, -1, 0, 0, 0, -2, 0, 1, 0},
+    {0, -1, 2, 2, -1, 0, 0, 0, -2, 0, 1, 0},
+    {1, 0, 2, 2, 0, 0, 0, 0, -2, 0, 1, 0},
+    {1, 0, 2, 2, 0, 0, 1, -1, -2, 0, 0, 0},
+    {1, 0, 2, 2, 0, 0, 1, -1, -2, 0, 0, 0},
+  },
+  { // 14: CONNECTED_CURIOSITY
+    {1, 1, 1, 2, 1, 1, 1, -1, 1, 0, 1, 0}, // key 00
+    {2, 1, 1, 2, 1, 1, 1, -1, 2, 0, 1, 0},
+    {2, 1, 2, 2, 1, 1, 1, -1, 2, 1, 1, 1},
+    {2, 1, 2, 2, 1, 1, 1, -1, 2, 1, 1, 1},
+    {2, 1, 2, 2, 1, 1, 1, -1, 2, 1, 1, 1},
+    {2, 1, 2, 2, 1, 1, 1, -1, 2, 1, 1, 1},
+    {2, 1, 2, 2, 1, 1, 1, -1, 2, 1, 1, 0},
+    {2, 1, 2, 2, 1, 1, 1, -1, 2, 1, 1, 0},
+    {2, 1, 2, 2, 1, 1, 1, -1, 2, 1, 1, 0}, // key 08
+    {2, 1, 2, 1, 1, 1, 1, -1, 2, 1, 1, 0},
+    {2, 1, 2, 1, 1, 1, 1, -1, 2, 1, 1, 0},
+    {2, 1, 1, 1, 1, 1, 1, -1, 2, 1, 1, 0},
+    {2, 1, 1, 1, 1, 1, 1, -1, 2, 1, 1, 0},
+    {2, 1, 1, 1, -1, -1, 1, -1, 2, 1, 1, 0},
+    {2, 1, 1, 1, -3, -3, 1, -1, 2, 1, 0, 0},
+    {2, 1, 1, 1, -3, -3, 1, -1, 2, 1, 0, 0},
+    {2, 1, 1, 0, -3, -3, 1, -1, 2, 1, 0, 0}, // key 16
+    {2, 1, 0, 0, -1, -1, 1, -1, 1, 0, 0, 0},
+    {1, 1, 0, 0, 1, 1, 1, -1, 1, 0, 0, 0},
+    {1, 1, 0, 0, 1, 1, 0, 0, 1, 0, -1, 0},
+    {1, 1, 0, 0, 1, 0, 0, 0, 1, 0, -1, 0},
+    {1, 1, 0, -1, 1, 0, 0, 0, 1, 0, -1, 0},
+    {1, 0, 0, -1, 0, 0, 0, 0, 1, 0, -1, 0},
+    {1, 0, -1, -1, 0, 0, 0, 0, 1, 0, -1, 0},
+    {1, 0, -1, -1, 0, 0, 0, 0, 1, 0, -1, 0}, // key 24
+    {1, 0, -1, -1, 0, 0, 0, 0, 1, 0, -1, 0},
+    {1, 0, -1, -1, 0, 0, 0, 0, 1, 0, -1, 0},
+    {1, 0, -1, -1, 0, -1, -1, 1, 0, 0, -1, 0},
+    {1, 0, -1, -2, 0, -1, -1, 1, 0, 0, -1, 0},
+    {0, -1, -1, -2, -1, -1, -1, 1, 0, 0, -1, 0},
+    {0, -1, -2, -2, -1, -1, -1, 1, 0, 0, -1, 0},
+    {0, -1, -2, -2, -1, -1, -1, 1, 0, 0, -1, 0},
+    {0, -1, -2, -2, -1, -1, -1, 1, 0, 0, -1, 0}, // key 32
+    {0, -1, -2, -2, -1, -1, -1, 1, 0, 0, -1, 0},
+    {0, -1, -2, -2, -1, -1, -1, 1, -1, 0, -1, 1},
+    {0, -1, -2, -2, -1, -1, -1, 1, -1, 0, -1, 1},
+    {0, -1, -2, -2, -1, -1, -1, 1, -1, 0, -1, 1},
+    {-1, -1, -2, -1, -1, -1, -1, 1, -1, 0, 0, 1},
+    {-1, -1, -1, -1, -1, -1, -1, 1, -1, 0, 0, 0},
+    {-1, -1, -1, -1, -1, -1, -1, 1, -1, 0, 0, 0},
+    {-1, -1, -1, -1, -1, -1, -1, 1, -1, 0, 0, 0}, // key 40
+    {-1, -1, -1, -1, -1, -1, -1, 1, -1, 0, 0, 0},
+    {-1, -1, -1, -1, -1, -1, -1, 1, -1, 0, 1, 0},
+    {-1, -1, -1, 0, -1, -1, -1, 1, -1, 0, 1, 0},
+    {-1, -1, -1, 0, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-1, -1, 0, 0, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-1, -1, 0, 0, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-2, -1, 0, 0, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-2, -1, 0, 0, -1, -1, -1, 1, -2, 0, 1, 0}, // key 48
+    {-2, -1, 0, 1, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-2, -1, 0, 1, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-2, -1, 1, 1, -1, -1, 0, 0, -2, 0, 1, 0},
+    {-2, -1, 1, 1, -1, -1, 0, 0, -2, 0, 1, 0},
+    {-2, -1, 1, 1, -1, -1, 0, 0, -2, 0, 1, 0},
+    {-2, -1, 1, 1, -1, -1, 0, 0, -2, 0, 1, 0},
+    {-2, -1, 1, 1, -1, 0, 0, 0, -2, 0, 1, 0},
+    {-2, -1, 1, 2, -1, 0, 0, 0, -2, 0, 1, 0}, // key 56
+    {-2, 0, 2, 2, 0, 0, 0, 0, -2, 0, 1, 0},
+    {-2, 0, 2, 2, 0, 0, 0, 0, -2, 0, 1, 0},
+    {-2, 0, 2, 2, 0, 0, 1, -1, -2, 0, 0, 0},
+    {-2, 0, 2, 2, 0, 0, 1, -1, -1, 0, 0, 0},
+    {-2, 0, 2, 2, 0, 0, 1, -1, -1, 0, 0, 0},
+    {-2, 0, 2, 2, 0, 0, 1, -1, -1, 0, 0, 0},
+    {-2, 0, 2, 2, 0, 1, 1, -1, -1, 0, 0, 0},
+  },
+  { // 15: CONNECTED_DOUBLE_BLINK
+    {2, 1, 2, 2, 1, 1, 1, -1, 2, 1, 1, 1}, // key 00
+    {2, 1, 2, 2, 1, 1, 1, -1, 2, 1, 1, 1},
+    {2, 1, 2, 2, 1, 1, 1, -1, 2, 1, 1, 1},
+    {2, 1, 2, 2, 1, 1, 1, -1, 2, 1, 1, 1},
+    {2, 1, 2, 2, 1, 1, 1, -1, 2, 1, 1, 0},
+    {2, 1, 2, 2, 1, 1, 1, -1, 2, 1, 1, 0},
+    {2, 1, 2, 1, 1, 1, 1, -1, 2, 1, 1, 0},
+    {2, 1, 2, 1, 1, 1, 1, -1, 2, 1, 1, 0},
+    {2, 1, 1, 1, 1, 1, 1, -1, 2, 1, 1, 0}, // key 08
+    {2, 1, 1, 1, 1, 1, 1, -1, 2, 1, 1, 0},
+    {2, 1, 1, 1, 1, 1, 1, -1, 2, 1, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 2, 1, 0, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 2, 1, 0, 0},
+    {1, 1, 1, 0, 1, 1, 1, -1, 1, 0, 0, 0},
+    {1, 1, 1, 0, 1, 1, 1, -1, 1, 0, 0, 0},
+    {1, 1, 0, 0, 1, 1, 1, -1, 1, 0, 0, 0},
+    {1, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0}, // key 16
+    {1, 1, 0, 0, 1, 0, 0, 0, 1, 0, -1, 0},
+    {1, 0, 0, -1, 0, 0, 0, 0, 1, 0, -1, 0},
+    {1, 0, 0, -1, 0, 0, 0, 0, 1, 0, -1, 0},
+    {0, 0, -1, -1, 0, 0, 0, 0, 1, 0, -1, 0},
+    {0, 0, -1, -1, 0, 0, 0, 0, 1, 0, -1, 0},
+    {0, 0, -1, -1, -2, -2, 0, 0, 1, 0, -1, 0},
+    {0, 0, -1, -1, -4, -4, 0, 0, 0, 0, -1, 0},
+    {0, 0, -1, -1, -4, -5, -1, 1, 0, 0, -1, 0}, // key 24
+    {0, 0, -1, -2, -4, -5, -1, 1, 0, 0, -1, 0},
+    {0, -1, -1, -2, -3, -3, -1, 1, 0, 0, -1, 0},
+    {-1, -1, -2, -2, -1, -1, -1, 1, 0, 0, -1, 0},
+    {-1, -1, -2, -2, -1, -1, -1, 1, 0, 0, -1, 0},
+    {-1, -1, -2, -2, -1, -1, -1, 1, 0, 0, -1, 0},
+    {-1, -1, -2, -2, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -2, -2, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -2, -2, -1, -1, -1, 1, -1, 0, -1, 1}, // key 32
+    {-1, -1, -2, -2, -1, -1, -1, 1, -1, 0, -1, 1},
+    {-1, -1, -2, -1, -1, -1, -1, 1, -1, 0, 0, 1},
+    {-2, -1, -2, -1, -1, -1, -1, 1, -1, 0, 0, 1},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -1, 0, 0, 0},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -1, 0, 0, 0},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -1, 0, 0, 0},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -1, 0, 0, 0},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -2, 0, 1, 0}, // key 40
+    {-2, -1, -1, 0, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-2, -1, -1, 0, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-2, -1, 0, 0, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-2, -1, 0, 0, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-2, -1, 0, 0, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-2, -1, 0, 1, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-2, -1, 0, 1, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-2, -1, 1, 1, -1, -1, 0, 0, -2, 0, 1, 0}, // key 48
+    {-1, -1, 1, 1, -1, -1, 0, 0, -2, 0, 1, 0},
+    {-1, -1, 1, 1, -1, -1, 0, 0, -2, 0, 1, 0},
+    {-1, -1, 1, 1, -1, -1, 0, 0, -2, 0, 1, 0},
+    {-1, -1, 1, 1, -1, 0, 0, 0, -2, 0, 1, 0},
+    {-1, -1, 1, 2, -1, 0, 0, 0, -2, 0, 1, 0},
+    {-1, 0, 1, 2, 0, 0, 0, 0, -2, 0, 1, 0},
+    {-1, 0, 2, 2, 0, 0, 0, 0, -2, 0, 1, 0},
+    {-1, 0, 2, 2, 0, 0, 1, -1, -1, 0, 1, 0}, // key 56
+    {-1, 0, 2, 2, 0, 0, 1, -1, -1, 0, 0, 0},
+    {0, 0, 2, 2, 0, 0, 1, -1, -1, 0, 0, 0},
+    {0, 0, 2, 2, 0, 1, 1, -1, -1, 0, 0, 0},
+    {0, 0, 2, 2, 0, 1, 1, -1, -1, 0, 0, 0},
+    {0, 1, 2, 2, 1, 1, 1, -1, -1, 0, 0, 0},
+    {0, 1, 2, 1, 1, 1, 1, -1, -1, 0, 0, 0},
+    {0, 1, 1, 1, 1, 1, 1, -1, -1, 0, -1, 0},
+  },
+  { // 16: CONNECTED_SMILE
+    {2, 1, 2, 2, 1, 1, 1, -1, 2, 1, 1, 1}, // key 00
+    {2, 1, 2, 2, 1, 1, 1, -1, 2, 1, 1, 1},
+    {2, 1, 2, 2, 1, 1, 1, -1, 2, 1, 1, 0},
+    {2, 1, 2, 1, 1, 1, 1, -1, 2, 1, 1, 0},
+    {2, 1, 2, 1, 1, 1, 1, -1, 2, 1, 1, 0},
+    {2, 1, 1, 1, 1, 1, 1, -1, 2, 1, 1, 0},
+    {2, 1, 1, 1, 1, 1, 1, -1, 2, 1, 1, 0},
+    {2, 1, 1, 1, 1, 1, 1, -1, 2, 1, 1, 0},
+    {2, 1, 1, 1, 1, 1, 1, -1, 2, 0, 1, 0}, // key 08
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 0, 0},
+    {1, 1, 1, 0, 1, 1, 1, -1, 1, 0, 0, 0},
+    {1, 1, 1, 0, 1, 1, 1, -1, 1, 0, 0, 0},
+    {1, 1, 0, 0, 1, 1, 1, -1, 1, 0, 0, 0},
+    {1, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0},
+    {1, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0},
+    {1, 0, 0, -1, 0, 0, 0, 0, 1, 0, -1, 0},
+    {1, 0, 0, -1, 0, 0, 0, 0, 1, 0, -1, 0}, // key 16
+    {1, 0, -1, -1, 0, 0, 0, 0, 1, 0, -1, 0},
+    {1, 0, -1, -1, 0, 0, 0, 0, 0, 0, -1, 0},
+    {1, 0, -1, -1, 0, 0, 0, 0, 0, 0, -1, 0},
+    {0, 0, -1, -1, 0, -1, -1, 1, 0, 0, -1, 0},
+    {0, 0, -1, -1, 0, -1, -1, 1, 0, 0, -1, 0},
+    {0, -1, -1, -2, -1, -1, -1, 1, 0, 0, -1, 0},
+    {0, -1, -1, -2, -1, -1, -1, 1, 0, 0, -1, 0},
+    {0, -1, -2, -2, -1, -1, -1, 1, 0, 0, -1, 0}, // key 24
+    {0, -1, -2, -2, -1, -1, -1, 1, 0, 0, -1, 0},
+    {0, -1, -2, -2, -1, -1, -1, 1, -1, 0, -1, 0},
+    {0, -1, -2, -2, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -2, -2, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -2, -2, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -2, -2, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -2, -1, -3, -3, -1, 1, -1, 0, -1, 1},
+    {-1, -1, -2, -1, -5, -5, -1, 1, -1, 0, 0, 1}, // key 32
+    {-1, -1, -1, -1, -5, -5, -1, 1, -1, 0, 0, 1},
+    {-1, -1, -1, -1, -5, -5, -1, 1, -1, 0, 0, 0},
+    {-1, -1, -1, -1, -3, -3, -1, 1, -2, 0, 0, 0},
+    {-1, -1, -1, -1, -1, -1, -1, 1, -2, 0, 0, 0},
+    {-1, -1, -1, -1, -1, -1, -1, 1, -2, 0, 0, 0},
+    {-2, -1, -1, 0, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-2, -1, -1, 0, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-2, -1, 0, 0, -1, -1, -1, 1, -2, 0, 1, 0}, // key 40
+    {-2, -1, 0, 0, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-2, -1, 0, 0, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-2, -1, 0, 1, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-2, -1, 0, 1, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-2, -1, 1, 1, -1, -1, 0, 0, -2, 0, 1, 0},
+    {-2, -1, 1, 1, -1, -1, 0, 0, -2, 0, 1, 0},
+    {-2, -1, 1, 1, -1, -1, 0, 0, -2, 0, 1, 0},
+    {-2, -1, 1, 1, -1, 0, 0, 0, -2, 0, 1, 0}, // key 48
+    {-2, -1, 1, 1, -1, 0, 0, 0, -2, 0, 1, 0},
+    {-2, 0, 1, 2, 0, 0, 0, 0, -2, 0, 1, 0},
+    {-2, 0, 1, 2, 0, 0, 0, 0, -1, 0, 1, 0},
+    {-2, 0, 2, 2, 0, 0, 1, -1, -1, 0, 1, 0},
+    {-2, 0, 2, 2, 0, 0, 1, -1, -1, 0, 1, 0},
+    {-2, 0, 2, 2, 0, 0, 1, -1, -1, 0, 1, 0},
+    {-1, 0, 2, 2, 0, 0, 1, -1, -1, 0, 0, 0},
+    {-1, 0, 2, 2, 0, 1, 1, -1, -1, 0, 0, 0}, // key 56
+    {-1, 0, 2, 2, 0, 1, 1, -1, -1, 0, 0, 0},
+    {-1, 1, 2, 2, 1, 1, 1, -1, -1, 0, 0, 0},
+    {-1, 1, 2, 1, 1, 1, 1, -1, -1, 0, 0, 0},
+    {-1, 1, 2, 1, 1, 1, 1, -1, -1, 0, 0, 0},
+    {-1, 1, 1, 1, 1, 1, 1, -1, 0, 0, -1, 0},
+    {-1, 1, 1, 1, 1, 1, 1, -1, 0, 0, -1, 0},
+    {-1, 1, 1, 1, 1, 1, 1, -1, 0, 0, -1, 1},
+  },
+  { // 17: CONNECTED_SQUASH
+    {2, 1, 2, 2, 1, 1, 1, -1, 2, 1, 1, 1}, // key 00
+    {2, 1, 2, 1, 1, 1, 1, -1, 2, 1, 1, 0},
+    {2, 1, 1, 1, 1, 1, 1, -1, 2, 1, 1, 0},
+    {2, 1, 1, 1, 1, 1, 1, -1, 2, 1, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 2, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 0, 1, 1, 1, -1, 1, 0, 0, 0},
+    {1, 1, 1, 0, 1, 1, 1, -1, 1, 0, 0, 0}, // key 08
+    {1, 1, 0, 0, 1, 0, 1, -1, 1, 0, 0, 0},
+    {1, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0},
+    {1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0},
+    {0, 0, 0, -1, 0, 0, 0, 0, 1, 0, -1, 0},
+    {0, 0, -1, -1, 0, 0, 0, 0, 0, 0, -1, 0},
+    {0, 0, -1, -1, 0, 0, 0, 0, 0, 0, -1, 0},
+    {0, 0, -1, -1, 0, 0, 0, 0, 0, 0, -1, 0}, // key 16
+    {0, 0, -1, -1, 0, -1, -1, 1, 0, 0, -1, 0},
+    {0, 0, -1, -1, 0, -1, -1, 1, 0, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, -1, 1, 0, 0, -1, 0},
+    {-1, -1, -1, -2, -1, -1, -1, 1, 0, 0, -1, 0},
+    {-1, -1, -2, -2, -1, -1, -1, 1, 0, 0, -1, 0},
+    {-1, -1, -2, -2, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -2, -2, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -2, -2, -1, -1, -1, 1, -1, 0, -1, 0}, // key 24
+    {-1, -1, -2, -2, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -2, -2, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -2, -2, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -2, -1, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -2, -1, -1, -1, -1, 1, -1, 0, -1, 1},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -1, 0, 0, 1},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -2, 0, 0, 1},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -2, 0, 0, 1}, // key 32
+    {-2, -1, -1, -1, -1, -1, -1, 1, -2, 0, 0, 0},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -2, 0, 0, 0},
+    {-2, -1, -1, 0, -1, -1, -1, 1, -2, 0, 0, 0},
+    {-2, -1, -1, 0, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-2, -1, 0, 0, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-2, -1, 0, 0, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-2, -1, 0, 0, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-2, -1, 0, 0, -3, -3, -1, 1, -2, 0, 1, 0}, // key 40
+    {-2, -1, 0, 1, -5, -5, -1, 1, -2, 0, 1, 0},
+    {-1, -1, 1, 1, -5, -5, 0, 0, -2, 0, 1, 0},
+    {-1, -1, 1, 1, -5, -5, 0, 0, -2, 0, 1, 0},
+    {-1, -1, 1, 1, -3, -3, 0, 0, -2, 0, 1, 0},
+    {-1, -1, 1, 1, -1, 0, 0, 0, -2, 0, 1, 0},
+    {-1, -1, 1, 1, -1, 0, 0, 0, -2, 0, 1, 0},
+    {-1, 0, 1, 2, 0, 0, 0, 0, -1, 0, 1, 0},
+    {-1, 0, 1, 2, 0, 0, 0, 0, -1, 0, 1, 0}, // key 48
+    {-1, 0, 2, 2, 0, 0, 1, -1, -1, 0, 1, 0},
+    {0, 0, 2, 2, 0, 0, 1, -1, -1, 0, 1, 0},
+    {0, 0, 2, 2, 0, 0, 1, -1, -1, 0, 1, 0},
+    {0, 0, 2, 2, 0, 1, 1, -1, -1, 0, 1, 0},
+    {0, 0, 2, 2, 0, 1, 1, -1, -1, 0, 0, 0},
+    {0, 1, 2, 2, 1, 1, 1, -1, -1, 0, 0, 0},
+    {0, 1, 2, 2, 1, 1, 1, -1, -1, 0, 0, 0},
+    {0, 1, 2, 1, 1, 1, 1, -1, -1, 0, 0, 0}, // key 56
+    {1, 1, 2, 1, 1, 1, 1, -1, 0, 0, 0, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 0, 0, -1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 0, 0, -1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 0, 0, -1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 0, 0, -1, 1},
+    {1, 1, 1, 1, 1, 1, 1, -1, 0, 0, -1, 1},
+    {1, 1, 1, 0, 1, 1, 1, -1, 0, 0, -1, 1},
+  },
+  { // 18: CONNECTED_WAVE
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0}, // key 00
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 0, 1, 1, 1, -1, 1, 0, 0, 0},
+    {1, 1, 0, 0, 1, 0, 1, -1, 1, 0, 0, 0},
+    {1, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0}, // key 08
+    {0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0},
+    {0, 0, 0, -1, 0, 0, 0, 0, 0, 0, -1, 0},
+    {0, 0, 0, -1, 0, 0, 0, 0, 0, 0, -1, 0},
+    {0, 0, -1, -1, 0, 0, 0, 0, 0, 0, -1, 0},
+    {-1, 0, -1, -1, 0, -1, 0, 0, 0, 0, -1, 0},
+    {-1, 0, -1, -1, 0, -1, -1, 1, 0, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, -1, 1, 0, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, -1, 1, 0, 0, -1, 0}, // key 16
+    {-1, -1, -1, -2, -1, -1, -1, 1, 0, 0, -1, 0},
+    {-1, -1, -1, -2, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -2, -2, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -2, -2, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -2, -2, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -2, -2, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -2, -2, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -2, -2, -1, -1, -1, 1, -1, 0, -1, 0}, // key 24
+    {-2, -1, -2, -2, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -2, -1, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -2, 0, -1, 0},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -2, 0, 0, 1},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -2, 0, 0, 1},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -2, 0, 0, 1},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -2, 0, 0, 0},
+    {-1, -1, -1, -1, -1, -1, -1, 1, -2, 0, 0, 0}, // key 32
+    {-1, -1, -1, 0, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-1, -1, 0, 0, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-1, -1, 0, 0, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-1, -1, 0, 0, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-1, -1, 0, 0, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-1, -1, 0, 1, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-1, -1, 0, 1, -1, -1, 0, 0, -2, 0, 1, 0},
+    {0, -1, 1, 1, -1, -1, 0, 0, -2, 0, 1, 0}, // key 40
+    {0, -1, 1, 1, -1, 0, 0, 0, -2, 0, 1, 0},
+    {0, -1, 1, 1, -1, 0, 0, 0, -2, 0, 1, 0},
+    {0, 0, 1, 1, 0, 0, 0, 0, -1, 0, 1, 0},
+    {0, 0, 1, 1, 0, 0, 0, 0, -1, 0, 1, 0},
+    {1, 0, 1, 2, 0, 0, 0, 0, -1, 0, 1, 0},
+    {1, 0, 1, 2, 0, 0, 1, -1, -1, 0, 1, 0},
+    {1, 0, 2, 2, 0, 0, 1, -1, -1, 0, 1, 0},
+    {1, 0, 2, 2, 0, 0, 1, -1, -1, 0, 1, 0}, // key 48
+    {1, 0, 2, 2, -2, -1, 1, -1, -1, 0, 1, 0},
+    {1, 0, 2, 2, -4, -3, 1, -1, -1, 0, 0, 0},
+    {1, 1, 2, 2, -3, -3, 1, -1, -1, 0, 0, 0},
+    {2, 1, 2, 2, -3, -3, 1, -1, -1, 0, 0, 0},
+    {2, 1, 2, 1, -1, -1, 1, -1, 0, 0, 0, 0},
+    {2, 1, 2, 1, 1, 1, 1, -1, 0, 0, 0, 0},
+    {2, 1, 1, 1, 1, 1, 1, -1, 0, 0, 0, 0},
+    {2, 1, 1, 1, 1, 1, 1, -1, 0, 0, -1, 0}, // key 56
+    {2, 1, 1, 1, 1, 1, 1, -1, 0, 0, -1, 0},
+    {2, 1, 1, 1, 1, 1, 1, -1, 0, 0, -1, 0},
+    {2, 1, 1, 1, 1, 1, 1, -1, 0, 0, -1, 0},
+    {2, 1, 1, 0, 1, 1, 1, -1, 1, 0, -1, 1},
+    {2, 1, 1, 0, 1, 1, 1, -1, 1, 0, -1, 1},
+    {2, 1, 0, 0, 1, 1, 1, -1, 1, 0, -1, 1},
+    {2, 1, 0, 0, 1, 1, 1, -1, 1, 0, -1, 0},
+  },
+  { // 19: CONNECTED_SETTLE
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0}, // key 00
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 0, 1, 0, 1, -1, 1, 0, 0, 0},
+    {1, 1, 1, 0, 1, 0, 1, -1, 1, 0, 0, 0},
+    {1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0},
+    {1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, -1, 0, 0, 0, 0, 0, 0, -1, 0}, // key 08
+    {0, 0, -1, -1, 0, 0, 0, 0, 0, 0, -1, 0},
+    {0, 0, -1, -1, 0, -1, 0, 0, 0, 0, -1, 0},
+    {0, 0, -1, -1, 0, -1, -1, 1, 0, 0, -1, 0},
+    {0, -1, -1, -1, -1, -1, -1, 1, 0, 0, -1, 0},
+    {0, -1, -1, -1, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -1, -2, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -1, -2, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -2, -2, -1, -1, -1, 1, -1, 0, -1, 0}, // key 16
+    {-1, -1, -2, -2, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -2, -2, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -2, -2, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -2, -2, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -2, -2, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -2, -2, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -2, -1, -1, -1, -1, 1, -2, 0, -1, 0},
+    {-2, -1, -2, -1, -1, -1, -1, 1, -2, 0, -1, 0}, // key 24
+    {-2, -1, -1, -1, -1, -1, -1, 1, -2, 0, 0, 0},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -2, 0, 0, 1},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -2, 0, 0, 1},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -2, 0, 0, 1},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -2, 0, 0, 1},
+    {-2, -1, -1, 0, -1, -1, -1, 1, -2, 0, 0, 0},
+    {-2, -1, -1, 0, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-2, -1, 0, 0, -1, -1, -1, 1, -2, 0, 1, 0}, // key 32
+    {-2, -1, 0, 0, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-2, -1, 0, 0, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-2, -1, 0, 1, -1, -1, -1, 1, -2, 0, 1, 0},
+    {-2, -1, 0, 1, -1, -1, 0, 0, -2, 0, 1, 0},
+    {-2, -1, 1, 1, -1, -1, 0, 0, -2, 0, 1, 0},
+    {-2, -1, 1, 1, -1, 0, 0, 0, -2, 0, 1, 0},
+    {-2, -1, 1, 1, -1, 0, 0, 0, -1, 0, 1, 0},
+    {-2, 0, 1, 1, 0, 0, 0, 0, -1, 0, 1, 0}, // key 40
+    {-2, 0, 1, 1, 0, 0, 0, 0, -1, 0, 1, 0},
+    {-1, 0, 1, 2, 0, 0, 0, 0, -1, 0, 1, 0},
+    {-1, 0, 1, 2, 0, 0, 1, -1, -1, 0, 1, 0},
+    {-1, 0, 2, 2, 0, 0, 1, -1, -1, 0, 1, 0},
+    {-1, 0, 2, 2, 0, 1, 1, -1, -1, 0, 1, 0},
+    {-1, 0, 2, 2, 0, 1, 1, -1, -1, 0, 1, 0},
+    {-1, 1, 2, 2, 1, 1, 1, -1, -1, 0, 1, 0},
+    {-1, 1, 2, 2, 1, 1, 1, -1, 0, 0, 0, 0}, // key 48
+    {-1, 1, 2, 2, 1, 1, 1, -1, 0, 0, 0, 0},
+    {-1, 1, 2, 2, 1, 1, 1, -1, 0, 0, 0, 0},
+    {-1, 1, 2, 1, 1, 1, 1, -1, 0, 0, 0, 0},
+    {0, 1, 1, 1, 1, 1, 1, -1, 0, 0, 0, 0},
+    {0, 1, 1, 1, 1, 1, 1, -1, 0, 0, 0, 0},
+    {0, 1, 1, 1, 1, 1, 1, -1, 0, 0, -1, 0},
+    {0, 1, 1, 1, 1, 1, 1, -1, 0, 0, -1, 0},
+    {0, 1, 1, 1, 1, 1, 1, -1, 1, 0, -1, 0}, // key 56
+    {0, 1, 1, 1, 1, 1, 1, -1, 1, 0, -1, 0},
+    {0, 1, 1, 0, -1, -1, 1, -1, 1, 0, -1, 1},
+    {0, 1, 0, 0, -3, -3, 1, -1, 1, 0, -1, 1},
+    {1, 1, 0, 0, -3, -3, 1, -1, 1, 0, -1, 1},
+    {1, 1, 0, 0, -3, -3, 1, -1, 1, 0, -1, 1},
+    {1, 1, 0, 0, -1, -1, 1, -1, 1, 0, -1, 0},
+    {1, 1, 0, -1, 1, 1, 1, -1, 1, 0, -1, 0},
+  },
+  { // 20: PUMP_RHYTHM
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 0}, // key 00
+    {0, 1, 0, 0, 1, 0, 0, 0, 1, 1, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, -1, -1, -1, 0, -1, 0, 0, -1, 0, -1, 0},
+    {0, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {0, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {0, -2, -1, -1, -1, -1, -1, 1, -2, 0, -1, 0}, // key 08
+    {-1, -2, -2, -2, -1, -1, -1, 1, -2, 0, -2, 0},
+    {-1, -2, -2, -2, -1, -2, -1, 1, -2, 0, -2, 0},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0}, // key 16
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 2},
+    {-2, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 2},
+    {-2, -2, -2, -2, -4, -4, -1, 1, -2, 0, -2, 2},
+    {-2, -2, -1, -1, -7, -7, -1, 1, -2, 0, -1, 2},
+    {-2, -1, -1, -1, -7, -7, -1, 1, -1, 0, -1, 2},
+    {-2, -1, -1, -1, -7, -7, -1, 1, -1, 0, -1, 2},
+    {-2, -1, -1, -1, -4, -4, -1, 1, -1, 0, -1, 2}, // key 24
+    {-2, 0, 0, 0, -2, -1, -1, 1, 0, 0, 0, 2},
+    {-2, 0, 0, 0, -1, -1, -1, 1, 0, 0, 0, 0},
+    {-2, 0, 0, 0, -1, -1, -1, 1, 0, 1, 0, 0},
+    {-2, 1, 0, 0, -1, -1, -1, 1, 1, 1, 0, 0},
+    {-2, 1, 1, 1, -1, -1, -1, 1, 1, 1, 1, 0},
+    {-2, 1, 1, 1, -1, 0, -1, 1, 1, 1, 1, 0},
+    {-1, 1, 1, 1, 0, 0, -1, 1, 1, 2, 1, 0},
+    {-1, 2, 1, 1, 0, 0, 0, 0, 2, 2, 1, 0}, // key 32
+    {-1, 2, 2, 2, 0, 0, 0, 0, 2, 2, 2, 1},
+    {-1, 2, 2, 2, 0, 1, 0, 0, 2, 2, 2, 1},
+    {-1, 2, 2, 2, 1, 1, 0, 0, 2, 2, 2, 1},
+    {-1, 2, 2, 2, 1, 1, 0, 0, 2, 2, 2, 1},
+    {-1, 2, 2, 2, 1, 1, 0, 0, 2, 3, 2, 1},
+    {-1, 2, 2, 2, 1, 1, 0, 0, 2, 3, 2, 1},
+    {-1, 2, 2, 2, 1, 2, 0, 0, 2, 3, 2, 1},
+    {-1, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 1}, // key 40
+    {0, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 1},
+    {0, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 1},
+    {0, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 1},
+    {0, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 2},
+    {0, 2, 1, 1, 2, 2, 1, -1, 2, 2, 1, 2},
+    {0, 1, 1, 1, 2, 2, 1, -1, 1, 1, 1, 2},
+    {0, 1, 1, 1, 2, 2, 1, -1, 1, 1, 1, 2},
+    {0, 1, 1, 1, 2, 2, 1, -1, 1, 1, 1, 2}, // key 48
+    {1, 0, 0, 0, 2, 2, 1, -1, 0, 1, 0, 2},
+    {1, 0, 0, 0, 2, 2, 1, -1, 0, 0, 0, 2},
+    {1, 0, 0, 0, 2, 2, 1, -1, 0, 0, 0, 2},
+    {1, -1, -1, -1, 2, 2, 1, -1, -1, 0, -1, 2},
+    {1, -1, -1, -1, 2, 2, 1, -1, -1, 0, -1, 0},
+    {1, -1, -1, -1, 2, 1, 1, -1, -1, 0, -1, 0},
+    {1, -2, -1, -1, 1, 1, 1, -1, -2, 0, -1, 0},
+    {1, -2, -2, -2, 1, 1, 1, -1, -2, 0, -2, 0}, // key 56
+    {1, -2, -2, -2, 1, 1, 1, -1, -2, 0, -2, 0},
+    {1, -2, -2, -2, 1, 1, 1, -1, -2, 0, -2, 0},
+    {2, -2, -2, -2, 1, 0, 1, -1, -2, 0, -2, 0},
+    {2, -2, -2, -2, 0, 0, 1, -1, -2, 0, -2, 0},
+    {2, -2, -2, -2, 0, 0, 1, -1, -2, 0, -2, 0},
+    {2, -2, -2, -2, 0, 0, 1, -1, -2, 0, -2, 0},
+    {2, -2, -2, -2, 0, -1, 1, -1, -2, 0, -2, 0},
+  },
+  { // 21: PUMP_CELEBRATION
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // key 00
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, -1, -1, -1, 0, -1, 0, 0, -1, 0, -1, 0},
+    {0, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {0, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {-1, -2, -1, -1, -1, -1, -1, 1, -2, 0, -1, 0},
+    {-1, -2, -2, -2, -1, -1, -1, 1, -2, 0, -2, 0},
+    {-1, -2, -2, -2, -1, -2, -1, 1, -2, 0, -2, 0},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0}, // key 08
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0},
+    {-2, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0},
+    {-2, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 2}, // key 16
+    {-2, -2, -1, -1, -2, -2, -1, 1, -2, 0, -1, 2},
+    {-2, -1, -1, -1, -2, -2, -1, 1, -1, 0, -1, 2},
+    {-2, -1, -1, -1, -2, -2, -1, 1, -1, 0, -1, 2},
+    {-2, -1, -1, -1, -2, -2, -1, 1, -1, 0, -1, 2},
+    {-2, 0, 0, 0, -2, -2, -1, 1, 0, 0, 0, 2},
+    {-2, 0, 0, 0, -2, -1, -1, 1, 0, 0, 0, 2},
+    {-2, 1, 0, 0, -1, -1, -1, 1, 1, 1, 0, 2},
+    {-2, 1, 1, 1, -1, -1, -1, 1, 1, 1, 1, 2}, // key 24
+    {-2, 1, 1, 1, -1, -1, -1, 1, 1, 1, 1, 0},
+    {-2, 2, 1, 1, -1, -1, -1, 1, 2, 2, 1, 0},
+    {-1, 2, 2, 2, -3, -2, -1, 1, 2, 2, 2, 0},
+    {-1, 2, 2, 2, -5, -5, -1, 1, 2, 2, 2, 1},
+    {-1, 2, 2, 2, -5, -5, 0, 0, 2, 2, 2, 1},
+    {-1, 2, 2, 2, -5, -5, 0, 0, 2, 2, 2, 1},
+    {-1, 2, 2, 2, -2, -1, 0, 0, 2, 2, 2, 1},
+    {-1, 2, 2, 2, 1, 1, 0, 0, 2, 3, 2, 1}, // key 32
+    {-1, 2, 2, 2, 1, 1, 0, 0, 2, 3, 2, 1},
+    {-1, 2, 2, 2, 1, 1, 0, 0, 2, 2, 2, 1},
+    {-1, 2, 2, 2, 1, 1, 0, 0, 2, 2, 2, 1},
+    {-1, 2, 2, 2, 1, 2, 0, 0, 2, 2, 2, 1},
+    {0, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 1},
+    {0, 2, 1, 1, 2, 2, 1, -1, 2, 2, 1, 0},
+    {0, 1, 1, 1, 2, 2, 1, -1, 1, 2, 1, 0},
+    {0, 1, 1, 1, 2, 2, 1, -1, 1, 1, 1, 0}, // key 40
+    {0, 1, 1, 1, 2, 2, 1, -1, 1, 1, 1, 0},
+    {0, 0, 0, 0, 2, 2, 1, -1, 0, 1, 0, 0},
+    {0, 0, 0, 0, 2, 2, 1, -1, 0, 0, 0, 2},
+    {0, 0, 0, 0, 2, 2, 1, -1, 0, 0, 0, 2},
+    {1, -1, -1, -1, 2, 2, 1, -1, -1, 0, -1, 2},
+    {1, -1, -1, -1, 2, 2, 1, -1, -1, 0, -1, 2},
+    {1, -1, -1, -1, 2, 2, 1, -1, -1, 0, -1, 2},
+    {1, -2, -1, -1, 2, 2, 1, -1, -2, 0, -1, 2}, // key 48
+    {1, -2, -2, -2, 2, 2, 1, -1, -2, 0, -2, 2},
+    {1, -2, -2, -2, 2, 2, 1, -1, -2, 0, -2, 2},
+    {1, -2, -2, -2, 2, 1, 1, -1, -2, 0, -2, 2},
+    {1, -2, -2, -2, 1, 1, 1, -1, -2, 0, -2, 0},
+    {1, -2, -2, -2, 1, 1, 1, -1, -2, 0, -2, 0},
+    {1, -2, -2, -2, 1, 1, 1, -1, -2, 0, -2, 0},
+    {2, -2, -2, -2, 1, 1, 1, -1, -2, 0, -2, 0},
+    {2, -2, -2, -2, 1, 0, 1, -1, -2, 0, -2, 0}, // key 56
+    {2, -2, -2, -2, 0, 0, 1, -1, -2, 0, -2, 0},
+    {2, -2, -2, -2, 0, 0, 1, -1, -2, 0, -2, 0},
+    {2, -2, -2, -2, 0, 0, 1, -1, -2, 0, -2, 0},
+    {2, -1, -1, -1, 0, -1, 1, -1, -1, 0, -1, 0},
+    {2, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {2, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {2, 0, 0, 0, -1, -1, 0, 0, 0, 0, 0, 0},
+  },
+  { // 22: PUMP_GENTLE_BOUNCE
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // key 00
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0},
+    {0, 1, 1, 1, 0, 1, 0, 0, 1, 1, 1, 0},
+    {0, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 2},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 2},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 2, 1, 2},
+    {1, 2, 1, 1, 1, 1, 1, -1, 2, 2, 1, 2},
+    {1, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 2},
+    {1, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 2}, // key 08
+    {1, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 2},
+    {1, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 2},
+    {1, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 1},
+    {1, 2, 2, 2, 2, 2, 1, -1, 2, 3, 2, 1},
+    {1, 2, 2, 2, 2, 2, 1, -1, 2, 3, 2, 1},
+    {2, 2, 2, 2, 2, 2, 1, -1, 2, 3, 2, 1},
+    {2, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 1},
+    {2, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 1}, // key 16
+    {2, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 1},
+    {2, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 1},
+    {2, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 1},
+    {2, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 0},
+    {2, 2, 1, 1, 2, 2, 1, -1, 2, 2, 1, 0},
+    {2, 1, 1, 1, 2, 1, 1, -1, 1, 1, 1, 0},
+    {2, 1, 1, 1, 1, 1, 1, -1, 1, 1, 1, 0},
+    {2, 1, 1, 1, 1, 1, 1, -1, 1, 1, 1, 0}, // key 24
+    {2, 0, 0, 0, 1, 1, 1, -1, 0, 1, 0, 0},
+    {2, 0, 0, 0, 1, 1, 1, -1, 0, 1, 0, 0},
+    {1, 0, 0, 0, 0, 0, 1, -1, 0, 0, 0, 0},
+    {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {1, -1, -1, -1, 0, 0, 0, 0, -1, 0, -1, 0},
+    {1, -1, -1, -1, 0, 0, 0, 0, -1, 0, -1, 2},
+    {1, -1, -1, -1, 0, -1, 0, 0, -1, 0, -1, 2},
+    {1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 2}, // key 32
+    {1, -2, -1, -1, -1, -1, 0, 0, -2, 0, -1, 2},
+    {1, -2, -2, -2, -3, -3, 0, 0, -2, 0, -2, 2},
+    {1, -2, -2, -2, -6, -6, 0, 0, -2, 0, -2, 2},
+    {1, -2, -2, -2, -6, -7, 0, 0, -2, 0, -2, 2},
+    {0, -2, -2, -2, -7, -7, -1, 1, -2, 0, -2, 2},
+    {0, -2, -2, -2, -4, -4, -1, 1, -2, 0, -2, 0},
+    {0, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0},
+    {0, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0}, // key 40
+    {0, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0},
+    {0, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0},
+    {0, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0},
+    {-1, -2, -1, -1, -2, -2, -1, 1, -2, 0, -1, 0},
+    {-1, -1, -1, -1, -2, -2, -1, 1, -1, 0, -1, 0}, // key 48
+    {-1, -1, -1, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -2, -1, -1, 1, -1, 0, -1, 0},
+    {-1, 0, 0, 0, -1, -1, -1, 1, 0, 0, 0, 0},
+    {-1, 0, 0, 0, -1, -1, -1, 1, 0, 0, 0, 0},
+    {-2, 0, 0, 0, -1, -1, -1, 1, 0, 1, 0, 0},
+    {-2, 0, 0, 0, -1, -1, -1, 1, 0, 1, 0, 0},
+    {-2, 1, 1, 1, -1, 0, -1, 1, 1, 1, 1, 2}, // key 56
+    {-2, 1, 1, 1, 0, 0, -1, 1, 1, 1, 1, 2},
+    {-2, 1, 1, 1, 0, 0, -1, 1, 1, 1, 1, 2},
+    {-2, 2, 1, 1, 0, 0, -1, 1, 2, 2, 1, 2},
+    {-2, 2, 2, 2, 0, 1, 0, 0, 2, 2, 2, 2},
+    {-2, 2, 2, 2, 1, 1, 0, 0, 2, 2, 2, 2},
+    {-2, 2, 2, 2, 1, 1, 0, 0, 2, 2, 2, 2},
+    {-2, 2, 2, 2, 1, 1, 0, 0, 2, 2, 2, 2},
+  },
+  { // 23: PUMP_DROP_RISE
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 0}, // key 00
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 2, 1, 2},
+    {1, 2, 1, 1, 1, 1, 1, -1, 2, 2, 1, 2},
+    {1, 2, 2, 2, 1, 2, 1, -1, 2, 2, 2, 2},
+    {1, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 2},
+    {1, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 2},
+    {1, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 2},
+    {1, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 2}, // key 08
+    {1, 2, 2, 2, 2, 2, 1, -1, 2, 3, 2, 2},
+    {2, 2, 2, 2, 2, 2, 1, -1, 2, 3, 2, 1},
+    {2, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 1},
+    {2, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 1},
+    {2, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 1},
+    {2, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 1},
+    {2, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 0},
+    {2, 2, 1, 1, 2, 2, 1, -1, 2, 2, 1, 0}, // key 16
+    {2, 1, 1, 1, 2, 2, 1, -1, 1, 2, 1, 0},
+    {2, 1, 1, 1, 2, 2, 1, -1, 1, 1, 1, 0},
+    {2, 1, 1, 1, 2, 1, 1, -1, 1, 1, 1, 0},
+    {2, 0, 0, 0, 1, 1, 1, -1, 0, 1, 0, 0},
+    {2, 0, 0, 0, 1, 1, 1, -1, 0, 0, 0, 0},
+    {2, 0, 0, 0, 1, 1, 1, -1, 0, 0, 0, 0},
+    {1, -1, 0, 0, 1, 1, 1, -1, -1, 0, 0, 0},
+    {1, -1, -1, -1, 1, 0, 1, -1, -1, 0, -1, 0}, // key 24
+    {1, -1, -1, -1, 0, 0, 0, 0, -1, 0, -1, 0},
+    {1, -1, -1, -1, 0, 0, 0, 0, -1, 0, -1, 0},
+    {1, -2, -1, -1, 0, 0, 0, 0, -2, 0, -1, 0},
+    {1, -2, -2, -2, 0, -1, 0, 0, -2, 0, -2, 2},
+    {1, -2, -2, -2, -1, -1, 0, 0, -2, 0, -2, 2},
+    {1, -2, -2, -2, -1, -1, 0, 0, -2, 0, -2, 2},
+    {1, -2, -2, -2, -1, -1, 0, 0, -2, 0, -2, 2},
+    {1, -2, -2, -2, -1, -1, 0, 0, -2, 0, -2, 2}, // key 32
+    {0, -2, -2, -2, -1, -2, 0, 0, -2, 0, -2, 2},
+    {0, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 2},
+    {0, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 2},
+    {0, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 2},
+    {0, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0},
+    {0, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0},
+    {0, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0},
+    {-1, -2, -1, -1, -2, -2, -1, 1, -2, 0, -1, 0}, // key 40
+    {-1, -1, -1, -1, -4, -4, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -7, -7, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -7, -7, -1, 1, -1, 0, -1, 0},
+    {-1, 0, 0, 0, -7, -7, -1, 1, 0, 0, 0, 0},
+    {-1, 0, 0, 0, -4, -4, -1, 1, 0, 0, 0, 0},
+    {-1, 0, 0, 0, -2, -2, -1, 1, 0, 1, 0, 0},
+    {-1, 1, 1, 1, -2, -2, -1, 1, 1, 1, 1, 0},
+    {-1, 1, 1, 1, -2, -1, -1, 1, 1, 1, 1, 0}, // key 48
+    {-1, 1, 1, 1, -1, -1, -1, 1, 1, 1, 1, 0},
+    {-2, 2, 1, 1, -1, -1, -1, 1, 2, 2, 1, 0},
+    {-2, 2, 2, 2, -1, -1, -1, 1, 2, 2, 2, 0},
+    {-2, 2, 2, 2, -1, -1, -1, 1, 2, 2, 2, 1},
+    {-2, 2, 2, 2, -1, 0, -1, 1, 2, 2, 2, 1},
+    {-2, 2, 2, 2, 0, 0, -1, 1, 2, 2, 2, 1},
+    {-2, 2, 2, 2, 0, 0, -1, 1, 2, 2, 2, 2},
+    {-2, 2, 2, 2, 0, 0, -1, 1, 2, 3, 2, 2}, // key 56
+    {-2, 2, 2, 2, 0, 1, 0, 0, 2, 3, 2, 2},
+    {-2, 2, 2, 2, 1, 1, 0, 0, 2, 3, 2, 2},
+    {-2, 2, 2, 2, 1, 1, 0, 0, 2, 2, 2, 2},
+    {-2, 2, 2, 2, 1, 1, 0, 0, 2, 2, 2, 2},
+    {-2, 2, 2, 2, 1, 1, 0, 0, 2, 2, 2, 2},
+    {-2, 2, 2, 2, 1, 2, 0, 0, 2, 2, 2, 2},
+    {-1, 2, 2, 2, 2, 2, 0, 0, 2, 2, 2, 0},
+  },
+  { // 24: PUMP_HAPPY_BLINK
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 2, 1, 2}, // key 00
+    {1, 2, 1, 1, 1, 2, 1, -1, 2, 2, 1, 2},
+    {1, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 2},
+    {1, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 2},
+    {1, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 2},
+    {1, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 2},
+    {2, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 2},
+    {2, 2, 2, 2, 2, 2, 1, -1, 2, 3, 2, 2},
+    {2, 2, 2, 2, 2, 2, 1, -1, 2, 3, 2, 2}, // key 08
+    {2, 2, 2, 2, 2, 2, 1, -1, 2, 3, 2, 1},
+    {2, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 1},
+    {2, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 1},
+    {2, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 1},
+    {2, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 1},
+    {2, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 1},
+    {2, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 0},
+    {2, 1, 1, 1, 2, 1, 1, -1, 1, 2, 1, 0}, // key 16
+    {2, 1, 1, 1, 1, 1, 1, -1, 1, 1, 1, 0},
+    {2, 1, 1, 1, 1, 1, 1, -1, 1, 1, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 1, 1, 0},
+    {1, 0, 0, 0, 1, 1, 1, -1, 0, 1, 0, 0},
+    {1, 0, 0, 0, 1, 0, 1, -1, 0, 0, 0, 0},
+    {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {1, -1, -1, -1, 0, 0, 0, 0, -1, 0, -1, 0}, // key 24
+    {1, -1, -1, -1, 0, -1, 0, 0, -1, 0, -1, 0},
+    {1, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {1, -2, -1, -1, -1, -1, 0, 0, -2, 0, -1, 2},
+    {1, -2, -2, -2, -1, -1, 0, 0, -2, 0, -2, 2},
+    {0, -2, -2, -2, -1, -1, 0, 0, -2, 0, -2, 2},
+    {0, -2, -2, -2, -1, -2, 0, 0, -2, 0, -2, 2},
+    {0, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 2},
+    {0, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 2}, // key 32
+    {0, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 2},
+    {0, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 2},
+    {0, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0}, // key 40
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0},
+    {-1, -2, -1, -1, -2, -2, -1, 1, -2, 0, -1, 0},
+    {-1, -1, -1, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -2, -1, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-2, 0, 0, 0, -1, -1, -1, 1, 0, 0, 0, 0},
+    {-2, 0, 0, 0, -3, -3, -1, 1, 0, 0, 0, 0}, // key 48
+    {-2, 0, 0, 0, -6, -6, -1, 1, 0, 1, 0, 0},
+    {-2, 1, 0, 0, -6, -5, -1, 1, 1, 1, 0, 0},
+    {-2, 1, 1, 1, -5, -5, -1, 1, 1, 1, 1, 0},
+    {-2, 1, 1, 1, -2, -2, -1, 1, 1, 1, 1, 0},
+    {-2, 1, 1, 1, 0, 0, -1, 1, 1, 2, 1, 0},
+    {-2, 2, 1, 1, 0, 1, 0, 0, 2, 2, 1, 2},
+    {-2, 2, 2, 2, 1, 1, 0, 0, 2, 2, 2, 2},
+    {-2, 2, 2, 2, 1, 1, 0, 0, 2, 2, 2, 2}, // key 56
+    {-2, 2, 2, 2, 1, 1, 0, 0, 2, 2, 2, 2},
+    {-2, 2, 2, 2, 1, 1, 0, 0, 2, 2, 2, 2},
+    {-1, 2, 2, 2, 1, 2, 0, 0, 2, 2, 2, 2},
+    {-1, 2, 2, 2, 2, 2, 0, 0, 2, 2, 2, 2},
+    {-1, 2, 2, 2, 2, 2, 0, 0, 2, 3, 2, 2},
+    {-1, 2, 2, 2, 2, 2, 0, 0, 2, 3, 2, 1},
+    {-1, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 1},
+  },
+  { // 25: PUMP_PULSE
+    {1, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 2}, // key 00
+    {1, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 2},
+    {2, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 2},
+    {2, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 2},
+    {2, 2, 2, 2, 2, 2, 1, -1, 2, 3, 2, 2},
+    {2, 2, 2, 2, 2, 2, 1, -1, 2, 3, 2, 2},
+    {2, 2, 2, 2, 2, 2, 1, -1, 2, 3, 2, 2},
+    {2, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 1},
+    {2, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 1}, // key 08
+    {2, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 1},
+    {2, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 1},
+    {2, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 0},
+    {2, 1, 1, 1, 2, 2, 1, -1, 1, 2, 1, 0},
+    {2, 1, 1, 1, 2, 1, 1, -1, 1, 1, 1, 0},
+    {2, 1, 1, 1, 1, 1, 1, -1, 1, 1, 1, 0},
+    {1, 1, 0, 0, 1, 1, 1, -1, 1, 1, 0, 0},
+    {1, 0, 0, 0, 1, 1, 1, -1, 0, 1, 0, 0}, // key 16
+    {1, 0, 0, 0, 1, 1, 1, -1, 0, 0, 0, 0},
+    {1, 0, 0, 0, 1, 0, 1, -1, 0, 0, 0, 0},
+    {1, -1, -1, -1, 0, 0, 0, 0, -1, 0, -1, 0},
+    {1, -1, -1, -1, 0, 0, 0, 0, -1, 0, -1, 0},
+    {1, -1, -1, -1, 0, 0, 0, 0, -1, 0, -1, 0},
+    {1, -2, -1, -1, 0, -1, 0, 0, -2, 0, -1, 0},
+    {1, -2, -2, -2, -1, -1, 0, 0, -2, 0, -2, 0},
+    {1, -2, -2, -2, -1, -1, 0, 0, -2, 0, -2, 0}, // key 24
+    {0, -2, -2, -2, -1, -1, 0, 0, -2, 0, -2, 0},
+    {0, -2, -2, -2, -1, -1, 0, 0, -2, 0, -2, 2},
+    {0, -2, -2, -2, -1, -2, -1, 1, -2, 0, -2, 2},
+    {0, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 2},
+    {0, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 2},
+    {0, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 2},
+    {0, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 2},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 2}, // key 32
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 2},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0},
+    {-1, -2, -1, -1, -2, -2, -1, 1, -2, 0, -1, 0},
+    {-1, -1, -1, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-1, 0, 0, 0, -2, -2, -1, 1, 0, 0, 0, 0},
+    {-1, 0, 0, 0, -2, -2, -1, 1, 0, 0, 0, 0}, // key 40
+    {-1, 0, 0, 0, -2, -2, -1, 1, 0, 1, 0, 0},
+    {-2, 1, 0, 0, -2, -1, -1, 1, 1, 1, 0, 0},
+    {-2, 1, 1, 1, -1, -1, -1, 1, 1, 1, 1, 0},
+    {-2, 1, 1, 1, -1, -1, -1, 1, 1, 1, 1, 0},
+    {-2, 1, 1, 1, -1, -1, -1, 1, 1, 2, 1, 0},
+    {-2, 2, 1, 1, -1, -1, -1, 1, 2, 2, 1, 0},
+    {-2, 2, 2, 2, -1, 0, -1, 1, 2, 2, 2, 1},
+    {-2, 2, 2, 2, 0, 0, -1, 1, 2, 2, 2, 1}, // key 48
+    {-2, 2, 2, 2, 0, 0, -1, 1, 2, 2, 2, 1},
+    {-2, 2, 2, 2, 0, 0, -1, 1, 2, 2, 2, 1},
+    {-2, 2, 2, 2, 0, 1, 0, 0, 2, 3, 2, 1},
+    {-2, 2, 2, 2, 1, 1, 0, 0, 2, 3, 2, 2},
+    {-2, 2, 2, 2, 1, 1, 0, 0, 2, 3, 2, 2},
+    {-2, 2, 2, 2, 1, 1, 0, 0, 2, 2, 2, 2},
+    {-1, 2, 2, 2, -1, -1, 0, 0, 2, 2, 2, 2},
+    {-1, 2, 2, 2, -4, -3, 0, 0, 2, 2, 2, 2}, // key 56
+    {-1, 2, 2, 2, -3, -3, 0, 0, 2, 2, 2, 2},
+    {-1, 2, 2, 2, -3, -3, 0, 0, 2, 2, 2, 2},
+    {-1, 2, 1, 1, 0, 0, 1, -1, 2, 2, 1, 2},
+    {-1, 1, 1, 1, 2, 2, 1, -1, 1, 1, 1, 2},
+    {-1, 1, 1, 1, 2, 2, 1, -1, 1, 1, 1, 0},
+    {-1, 1, 1, 1, 2, 2, 1, -1, 1, 1, 1, 0},
+    {-1, 0, 0, 0, 2, 2, 1, -1, 0, 1, 0, 0},
+  },
+  { // 26: PUMP_REASSURE
+    {2, 2, 2, 2, -3, -3, 1, -1, 2, 2, 2, 2}, // key 00
+    {2, 2, 2, 2, -3, -3, 1, -1, 2, 2, 2, 2},
+    {2, 2, 2, 2, 0, 0, 1, -1, 2, 3, 2, 2},
+    {2, 2, 2, 2, 2, 2, 1, -1, 2, 3, 2, 2},
+    {2, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 2},
+    {2, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 2},
+    {2, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 1},
+    {2, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 1},
+    {2, 2, 1, 1, 2, 2, 1, -1, 2, 2, 1, 0}, // key 08
+    {2, 1, 1, 1, 2, 2, 1, -1, 1, 2, 1, 0},
+    {2, 1, 1, 1, 2, 1, 1, -1, 1, 1, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 1, 1, 0},
+    {1, 0, 0, 0, 1, 1, 1, -1, 0, 1, 0, 0},
+    {1, 0, 0, 0, 1, 1, 1, -1, 0, 0, 0, 0},
+    {1, 0, 0, 0, 1, 1, 1, -1, 0, 0, 0, 0},
+    {1, -1, -1, -1, 1, 0, 0, 0, -1, 0, -1, 0},
+    {1, -1, -1, -1, 0, 0, 0, 0, -1, 0, -1, 0}, // key 16
+    {1, -1, -1, -1, 0, 0, 0, 0, -1, 0, -1, 0},
+    {1, -2, -1, -1, 0, 0, 0, 0, -2, 0, -1, 0},
+    {1, -2, -2, -2, 0, -1, 0, 0, -2, 0, -2, 0},
+    {1, -2, -2, -2, -1, -1, 0, 0, -2, 0, -2, 0},
+    {0, -2, -2, -2, -1, -1, 0, 0, -2, 0, -2, 0},
+    {0, -2, -2, -2, -1, -1, 0, 0, -2, 0, -2, 0},
+    {0, -2, -2, -2, -1, -1, 0, 0, -2, 0, -2, 0},
+    {0, -2, -2, -2, -1, -2, -1, 1, -2, 0, -2, 2}, // key 24
+    {0, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 2},
+    {0, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 2},
+    {0, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 2},
+    {0, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 2},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 2},
+    {-1, -1, -1, -1, -2, -2, -1, 1, -1, 0, -1, 2},
+    {-1, -1, -1, -1, -2, -2, -1, 1, -1, 0, -1, 2},
+    {-1, -1, -1, -1, -2, -2, -1, 1, -1, 0, -1, 2}, // key 32
+    {-1, 0, 0, 0, -2, -2, -1, 1, 0, 0, 0, 0},
+    {-1, 0, 0, 0, -2, -2, -1, 1, 0, 0, 0, 0},
+    {-1, 0, 0, 0, -2, -2, -1, 1, 0, 1, 0, 0},
+    {-1, 1, 1, 1, -2, -2, -1, 1, 1, 1, 1, 0},
+    {-1, 1, 1, 1, -2, -2, -1, 1, 1, 1, 1, 0},
+    {-2, 1, 1, 1, -2, -2, -1, 1, 1, 1, 1, 0},
+    {-2, 2, 1, 1, -2, -1, -1, 1, 2, 2, 1, 0},
+    {-2, 2, 2, 2, -1, -1, -1, 1, 2, 2, 2, 0}, // key 40
+    {-2, 2, 2, 2, -1, -1, -1, 1, 2, 2, 2, 1},
+    {-2, 2, 2, 2, -1, -1, -1, 1, 2, 2, 2, 1},
+    {-2, 2, 2, 2, -1, -1, -1, 1, 2, 2, 2, 1},
+    {-2, 2, 2, 2, -1, 0, -1, 1, 2, 3, 2, 1},
+    {-2, 2, 2, 2, 0, 0, -1, 1, 2, 3, 2, 1},
+    {-2, 2, 2, 2, 0, 0, -1, 1, 2, 3, 2, 1},
+    {-2, 2, 2, 2, 0, 0, 0, 0, 2, 2, 2, 1},
+    {-2, 2, 2, 2, 0, 1, 0, 0, 2, 2, 2, 1}, // key 48
+    {-2, 2, 2, 2, 1, 1, 0, 0, 2, 2, 2, 1},
+    {-2, 2, 2, 2, 1, 1, 0, 0, 2, 2, 2, 0},
+    {-1, 2, 1, 1, 1, 1, 0, 0, 2, 2, 1, 2},
+    {-1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 2},
+    {-1, 1, 1, 1, 1, 2, 0, 0, 1, 1, 1, 2},
+    {-1, 1, 1, 1, 2, 2, 0, 0, 1, 1, 1, 2},
+    {-1, 0, 0, 0, 2, 2, 0, 0, 0, 1, 0, 2},
+    {-1, 0, 0, 0, 2, 2, 1, -1, 0, 0, 0, 2}, // key 56
+    {-1, -1, 0, 0, 2, 2, 1, -1, -1, 0, 0, 2},
+    {-1, -1, -1, -1, 2, 2, 1, -1, -1, 0, -1, 2},
+    {-1, -1, -1, -1, 2, 2, 1, -1, -1, 0, -1, 0},
+    {-1, -2, -1, -1, 2, 2, 1, -1, -2, 0, -1, 0},
+    {0, -2, -2, -2, 2, 2, 1, -1, -2, 0, -2, 0},
+    {0, -2, -2, -2, 0, 0, 1, -1, -2, 0, -2, 0},
+    {0, -2, -2, -2, -3, -3, 1, -1, -2, 0, -2, 0},
+  },
+  { // 27: PUMP_JOYOUS
+    {2, 2, 2, 2, 2, 2, 1, -1, 2, 3, 2, 2}, // key 00
+    {2, 2, 2, 2, 2, 2, 1, -1, 2, 3, 2, 2},
+    {2, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 2},
+    {2, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 2},
+    {2, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 2},
+    {2, 2, 2, 2, 0, 0, 1, -1, 2, 2, 2, 1},
+    {2, 2, 2, 2, -3, -3, 1, -1, 2, 2, 2, 1},
+    {1, 2, 2, 2, -3, -4, 1, -1, 2, 2, 2, 0},
+    {1, 2, 1, 1, -4, -4, 1, -1, 2, 2, 1, 0}, // key 08
+    {1, 1, 1, 1, -1, -1, 1, -1, 1, 1, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 1, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 1, 1, 0},
+    {1, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0},
+    {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {1, -1, -1, -1, 0, -1, 0, 0, -1, 0, -1, 0}, // key 16
+    {0, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {0, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {0, -2, -1, -1, -1, -1, 0, 0, -2, 0, -1, 0},
+    {0, -2, -2, -2, -1, -1, 0, 0, -2, 0, -2, 0},
+    {0, -2, -2, -2, -1, -2, -1, 1, -2, 0, -2, 0},
+    {0, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0},
+    {0, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 2},
+    {0, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 2}, // key 24
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 2},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 2},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 2},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 2},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 2},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 2},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0}, // key 32
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0},
+    {-1, -2, -1, -1, -2, -2, -1, 1, -2, 0, -1, 0},
+    {-2, -1, -1, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -1, -1, -2, -1, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-2, 0, 0, 0, -1, -1, -1, 1, 0, 0, 0, 0},
+    {-2, 0, 0, 0, -1, -1, -1, 1, 0, 0, 0, 0}, // key 40
+    {-2, 0, 0, 0, -1, 0, -1, 1, 0, 1, 0, 0},
+    {-2, 1, 0, 0, 0, 0, -1, 1, 1, 1, 0, 0},
+    {-2, 1, 1, 1, 0, 0, -1, 1, 1, 1, 1, 0},
+    {-2, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 0},
+    {-2, 1, 1, 1, 0, 0, 0, 0, 1, 2, 1, 0},
+    {-2, 2, 1, 1, 1, 1, 0, 0, 2, 2, 1, 0},
+    {-1, 2, 2, 2, 1, 1, 0, 0, 2, 2, 2, 0},
+    {-1, 2, 2, 2, 1, 1, 0, 0, 2, 2, 2, 1}, // key 48
+    {-1, 2, 2, 2, 1, 1, 0, 0, 2, 2, 2, 1},
+    {-1, 2, 2, 2, 1, 2, 0, 0, 2, 2, 2, 2},
+    {-1, 2, 2, 2, 2, 2, 0, 0, 2, 2, 2, 2},
+    {-1, 2, 2, 2, 2, 2, 0, 0, 2, 2, 2, 2},
+    {-1, 2, 2, 2, 2, 2, 1, -1, 2, 3, 2, 2},
+    {-1, 2, 2, 2, 2, 2, 1, -1, 2, 3, 2, 2},
+    {-1, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 2},
+    {-1, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 2}, // key 56
+    {0, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 2},
+    {0, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 1},
+    {0, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 1},
+    {0, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 0},
+    {0, 2, 1, 1, 2, 2, 1, -1, 2, 2, 1, 0},
+    {0, 1, 1, 1, 2, 2, 1, -1, 1, 2, 1, 0},
+    {0, 1, 1, 1, 2, 2, 1, -1, 1, 1, 1, 0},
+  },
+  { // 28: PUMP_FLOW
+    {2, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 2}, // key 00
+    {2, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 2},
+    {2, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 2},
+    {1, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 1},
+    {1, 2, 2, 2, 2, 1, 1, -1, 2, 2, 2, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 2, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 1, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 1, 1, 0},
+    {1, 1, 0, 0, 1, 1, 1, -1, 1, 1, 0, 0}, // key 08
+    {1, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0},
+    {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {1, -1, -1, -1, -2, -2, 0, 0, -1, 0, -1, 0},
+    {0, -1, -1, -1, -5, -5, 0, 0, -1, 0, -1, 0},
+    {0, -1, -1, -1, -6, -6, 0, 0, -1, 0, -1, 0},
+    {0, -2, -1, -1, -6, -6, 0, 0, -2, 0, -1, 0},
+    {0, -2, -2, -2, -3, -3, 0, 0, -2, 0, -2, 0}, // key 16
+    {0, -2, -2, -2, -1, -1, 0, 0, -2, 0, -2, 0},
+    {0, -2, -2, -2, -1, -2, -1, 1, -2, 0, -2, 0},
+    {0, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0},
+    {0, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 2},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 2},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 2}, // key 24
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 2},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 2},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 2},
+    {-1, -2, -1, -1, -2, -2, -1, 1, -2, 0, -1, 2},
+    {-1, -1, -1, -1, -2, -2, -1, 1, -1, 0, -1, 2},
+    {-1, -1, -1, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -1, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-2, 0, 0, 0, -2, -2, -1, 1, 0, 0, 0, 0}, // key 32
+    {-2, 0, 0, 0, -2, -2, -1, 1, 0, 0, 0, 0},
+    {-2, 0, 0, 0, -2, -1, -1, 1, 0, 1, 0, 0},
+    {-2, 1, 0, 0, -1, -1, -1, 1, 1, 1, 0, 0},
+    {-2, 1, 1, 1, -1, -1, -1, 1, 1, 1, 1, 0},
+    {-2, 1, 1, 1, -1, -1, -1, 1, 1, 1, 1, 0},
+    {-2, 1, 1, 1, -1, 0, -1, 1, 1, 2, 1, 0},
+    {-2, 2, 1, 1, 0, 0, -1, 1, 2, 2, 1, 0},
+    {-2, 2, 2, 2, 0, 0, -1, 1, 2, 2, 2, 1}, // key 40
+    {-2, 2, 2, 2, 0, 0, 0, 0, 2, 2, 2, 1},
+    {-2, 2, 2, 2, 0, 0, 0, 0, 2, 2, 2, 1},
+    {-1, 2, 2, 2, 0, 1, 0, 0, 2, 2, 2, 1},
+    {-1, 2, 2, 2, 1, 1, 0, 0, 2, 3, 2, 1},
+    {-1, 2, 2, 2, 1, 1, 0, 0, 2, 3, 2, 1},
+    {-1, 2, 2, 2, 1, 1, 0, 0, 2, 3, 2, 1},
+    {-1, 2, 2, 2, 1, 2, 0, 0, 2, 2, 2, 1},
+    {-1, 2, 2, 2, 2, 2, 0, 0, 2, 2, 2, 2}, // key 48
+    {-1, 2, 2, 2, 2, 2, 0, 0, 2, 2, 2, 2},
+    {-1, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 2},
+    {-1, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 2},
+    {-1, 2, 1, 1, 2, 2, 1, -1, 2, 2, 1, 2},
+    {0, 1, 1, 1, 2, 2, 1, -1, 1, 1, 1, 2},
+    {0, 1, 1, 1, 2, 2, 1, -1, 1, 1, 1, 2},
+    {0, 1, 1, 1, 2, 2, 1, -1, 1, 1, 1, 2},
+    {0, 0, 0, 0, 2, 2, 1, -1, 0, 1, 0, 2}, // key 56
+    {0, 0, 0, 0, 2, 2, 1, -1, 0, 0, 0, 0},
+    {0, 0, 0, 0, 2, 2, 1, -1, 0, 0, 0, 0},
+    {0, -1, -1, -1, 2, 2, 1, -1, -1, 0, -1, 0},
+    {0, -1, -1, -1, 2, 2, 1, -1, -1, 0, -1, 0},
+    {1, -1, -1, -1, 2, 2, 1, -1, -1, 0, -1, 0},
+    {1, -2, -1, -1, 2, 2, 1, -1, -2, 0, -1, 0},
+    {1, -2, -2, -2, 2, 1, 1, -1, -2, 0, -2, 0},
+  },
+  { // 29: PUMP_THUMBS_UP
+    {1, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 2}, // key 00
+    {1, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 2},
+    {1, 2, 1, 1, 2, 1, 1, -1, 2, 2, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 1, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 1, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 1, 1, 0},
+    {1, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0},
+    {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {1, -1, 0, 0, 0, 0, 0, 0, -1, 0, 0, 0}, // key 08
+    {0, -1, -1, -1, 0, 0, 0, 0, -1, 0, -1, 0},
+    {0, -1, -1, -1, 0, 0, 0, 0, -1, 0, -1, 0},
+    {0, -2, -1, -1, 0, -1, 0, 0, -2, 0, -1, 0},
+    {0, -2, -2, -2, -1, -1, 0, 0, -2, 0, -2, 0},
+    {0, -2, -2, -2, -1, -1, 0, 0, -2, 0, -2, 0},
+    {0, -2, -2, -2, -1, -1, 0, 0, -2, 0, -2, 0},
+    {0, -2, -2, -2, -1, -1, -1, 1, -2, 0, -2, 0},
+    {0, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0}, // key 16
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0},
+    {-1, -2, -2, -2, -4, -4, -1, 1, -2, 0, -2, 0},
+    {-1, -2, -2, -2, -7, -7, -1, 1, -2, 0, -2, 2},
+    {-1, -2, -2, -2, -7, -7, -1, 1, -2, 0, -2, 2},
+    {-1, -2, -2, -2, -7, -7, -1, 1, -2, 0, -2, 2},
+    {-1, -2, -1, -1, -4, -4, -1, 1, -2, 0, -1, 2},
+    {-1, -1, -1, -1, -2, -2, -1, 1, -1, 0, -1, 2}, // key 24
+    {-1, -1, -1, -1, -2, -2, -1, 1, -1, 0, -1, 2},
+    {-1, -1, -1, -1, -2, -2, -1, 1, -1, 0, -1, 2},
+    {-2, 0, 0, 0, -2, -2, -1, 1, 0, 0, 0, 2},
+    {-2, 0, 0, 0, -2, -2, -1, 1, 0, 0, 0, 2},
+    {-2, 0, 0, 0, -2, -2, -1, 1, 0, 1, 0, 0},
+    {-2, 1, 1, 1, -2, -2, -1, 1, 1, 1, 1, 0},
+    {-2, 1, 1, 1, -2, -1, -1, 1, 1, 1, 1, 0},
+    {-2, 1, 1, 1, -1, -1, -1, 1, 1, 2, 1, 0}, // key 32
+    {-2, 2, 1, 1, -1, -1, -1, 1, 2, 2, 1, 0},
+    {-2, 2, 2, 2, -1, -1, -1, 1, 2, 2, 2, 1},
+    {-2, 2, 2, 2, -1, -1, -1, 1, 2, 2, 2, 1},
+    {-2, 2, 2, 2, 0, 0, -1, 1, 2, 2, 2, 1},
+    {-2, 2, 2, 2, 0, 0, -1, 1, 2, 2, 2, 1},
+    {-2, 2, 2, 2, 0, 0, 0, 0, 2, 3, 2, 1},
+    {-1, 2, 2, 2, 0, 0, 0, 0, 2, 3, 2, 1},
+    {-1, 2, 2, 2, 0, 1, 0, 0, 2, 2, 2, 1}, // key 40
+    {-1, 2, 2, 2, 1, 1, 0, 0, 2, 2, 2, 1},
+    {-1, 2, 2, 2, 1, 1, 0, 0, 2, 2, 2, 1},
+    {-1, 2, 2, 2, 1, 1, 0, 0, 2, 2, 2, 1},
+    {-1, 2, 2, 2, 1, 1, 0, 0, 2, 2, 2, 0},
+    {-1, 1, 1, 1, 1, 2, 0, 0, 1, 2, 1, 0},
+    {-1, 1, 1, 1, 2, 2, 0, 0, 1, 1, 1, 0},
+    {-1, 1, 1, 1, 2, 2, 1, -1, 1, 1, 1, 2},
+    {-1, 0, 0, 0, 2, 2, 1, -1, 0, 1, 0, 2}, // key 48
+    {0, 0, 0, 0, 2, 2, 1, -1, 0, 0, 0, 2},
+    {0, 0, 0, 0, 2, 2, 1, -1, 0, 0, 0, 2},
+    {0, -1, -1, -1, 2, 2, 1, -1, -1, 0, -1, 2},
+    {0, -1, -1, -1, 2, 2, 1, -1, -1, 0, -1, 2},
+    {0, -1, -1, -1, 2, 2, 1, -1, -1, 0, -1, 2},
+    {0, -2, -1, -1, 2, 2, 1, -1, -2, 0, -1, 2},
+    {0, -2, -2, -2, 2, 2, 1, -1, -2, 0, -2, 0},
+    {0, -2, -2, -2, 2, 2, 1, -1, -2, 0, -2, 0}, // key 56
+    {1, -2, -2, -2, 2, 2, 1, -1, -2, 0, -2, 0},
+    {1, -2, -2, -2, 2, 2, 1, -1, -2, 0, -2, 0},
+    {1, -2, -2, -2, 2, 2, 1, -1, -2, 0, -2, 0},
+    {1, -2, -2, -2, 2, 1, 1, -1, -2, 0, -2, 0},
+    {1, -2, -2, -2, 1, 1, 1, -1, -2, 0, -2, 0},
+    {1, -2, -2, -2, 1, 1, 1, -1, -2, 0, -2, 0},
+    {1, -2, -2, -2, 1, 1, 1, -1, -2, 0, -2, 0},
+  },
+  { // 30: PUMP_STEADY
+    {1, 2, 1, 1, 1, 1, 1, -1, 2, 2, 1, 2}, // key 00
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 1, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 1, 1, 0},
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 0},
+    {1, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, -1, -1, -1, 0, -1, 0, 0, -1, 0, -1, 0}, // key 08
+    {0, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {0, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {0, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {0, -2, -2, -2, -1, -1, -1, 1, -2, 0, -2, 0},
+    {-1, -2, -2, -2, -1, -2, -1, 1, -2, 0, -2, 0},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0}, // key 16
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 2},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 2},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 2},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 2},
+    {-2, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 2},
+    {-2, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 2}, // key 24
+    {-2, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 2},
+    {-2, -2, -1, -1, -4, -4, -1, 1, -2, 0, -1, 2},
+    {-2, -1, -1, -1, -7, -7, -1, 1, -1, 0, -1, 2},
+    {-2, -1, -1, -1, -7, -6, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -1, -1, -6, -6, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -1, -1, -3, -3, -1, 1, -1, 0, -1, 0},
+    {-2, 0, 0, 0, -1, -1, -1, 1, 0, 0, 0, 0},
+    {-2, 0, 0, 0, -1, -1, -1, 1, 0, 0, 0, 0}, // key 32
+    {-2, 0, 0, 0, -1, 0, -1, 1, 0, 1, 0, 0},
+    {-2, 1, 0, 0, 0, 0, -1, 1, 1, 1, 0, 0},
+    {-1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 0},
+    {-1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 0},
+    {-1, 1, 1, 1, 0, 1, 0, 0, 1, 1, 1, 0},
+    {-1, 2, 1, 1, 1, 1, 0, 0, 2, 2, 1, 0},
+    {-1, 2, 2, 2, 1, 1, 0, 0, 2, 2, 2, 0},
+    {-1, 2, 2, 2, 1, 1, 0, 0, 2, 2, 2, 1}, // key 40
+    {-1, 2, 2, 2, 1, 1, 0, 0, 2, 2, 2, 1},
+    {-1, 2, 2, 2, 1, 2, 0, 0, 2, 2, 2, 1},
+    {-1, 2, 2, 2, 2, 2, 0, 0, 2, 2, 2, 1},
+    {-1, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 1},
+    {0, 2, 2, 2, 2, 2, 1, -1, 2, 3, 2, 1},
+    {0, 2, 2, 2, 2, 2, 1, -1, 2, 3, 2, 2},
+    {0, 2, 2, 2, 2, 2, 1, -1, 2, 3, 2, 2},
+    {0, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 2}, // key 48
+    {0, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 2},
+    {0, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 2},
+    {0, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 2},
+    {0, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 2},
+    {1, 2, 1, 1, 2, 2, 1, -1, 2, 2, 1, 2},
+    {1, 1, 1, 1, 2, 2, 1, -1, 1, 2, 1, 0},
+    {1, 1, 1, 1, 2, 2, 1, -1, 1, 1, 1, 0},
+    {1, 1, 1, 1, 2, 2, 1, -1, 1, 1, 1, 0}, // key 56
+    {1, 1, 1, 1, 2, 1, 1, -1, 1, 1, 1, 0},
+    {1, 0, 0, 0, 1, 1, 1, -1, 0, 1, 0, 0},
+    {1, 0, 0, 0, 1, 1, 1, -1, 0, 0, 0, 0},
+    {1, 0, 0, 0, 1, 1, 1, -1, 0, 0, 0, 0},
+    {1, -1, -1, -1, 1, 1, 1, -1, -1, 0, -1, 0},
+    {1, -1, -1, -1, 1, 0, 1, -1, -1, 0, -1, 0},
+    {2, -1, -1, -1, 0, 0, 1, -1, -1, 0, -1, 0},
+  },
+  { // 31: PUMP_FINAL_BEAT
+    {1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 0}, // key 00
+    {0, 1, 0, 0, 1, 0, 0, 0, 1, 1, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, -1, -1, -1, 0, -1, 0, 0, -1, 0, -1, 0},
+    {0, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {0, -1, -1, -1, -1, -1, 0, 0, -1, 0, -1, 0},
+    {0, -2, -1, -1, -1, -1, -1, 1, -2, 0, -1, 0}, // key 08
+    {-1, -2, -2, -2, -1, -1, -1, 1, -2, 0, -2, 0},
+    {-1, -2, -2, -2, -1, -2, -1, 1, -2, 0, -2, 0},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0}, // key 16
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 0},
+    {-1, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 2},
+    {-2, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 2},
+    {-2, -2, -2, -2, -2, -2, -1, 1, -2, 0, -2, 2},
+    {-2, -2, -1, -1, -2, -2, -1, 1, -2, 0, -1, 2},
+    {-2, -1, -1, -1, -2, -2, -1, 1, -1, 0, -1, 2},
+    {-2, -1, -1, -1, -2, -2, -1, 1, -1, 0, -1, 2},
+    {-2, -1, -1, -1, -2, -2, -1, 1, -1, 0, -1, 2}, // key 24
+    {-2, 0, 0, 0, -2, -1, -1, 1, 0, 0, 0, 2},
+    {-2, 0, 0, 0, -1, -1, -1, 1, 0, 0, 0, 0},
+    {-2, 0, 0, 0, -1, -1, -1, 1, 0, 1, 0, 0},
+    {-2, 1, 0, 0, -1, -1, -1, 1, 1, 1, 0, 0},
+    {-2, 1, 1, 1, -1, -1, -1, 1, 1, 1, 1, 0},
+    {-2, 1, 1, 1, -1, 0, -1, 1, 1, 1, 1, 0},
+    {-1, 1, 1, 1, 0, 0, -1, 1, 1, 2, 1, 0},
+    {-1, 2, 1, 1, 0, 0, 0, 0, 2, 2, 1, 0}, // key 32
+    {-1, 2, 2, 2, -2, -2, 0, 0, 2, 2, 2, 1},
+    {-1, 2, 2, 2, -5, -4, 0, 0, 2, 2, 2, 1},
+    {-1, 2, 2, 2, -4, -4, 0, 0, 2, 2, 2, 1},
+    {-1, 2, 2, 2, -4, -4, 0, 0, 2, 2, 2, 1},
+    {-1, 2, 2, 2, -1, -1, 0, 0, 2, 3, 2, 1},
+    {-1, 2, 2, 2, 1, 1, 0, 0, 2, 3, 2, 1},
+    {-1, 2, 2, 2, 1, 2, 0, 0, 2, 3, 2, 1},
+    {-1, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 1}, // key 40
+    {0, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 1},
+    {0, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 1},
+    {0, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 1},
+    {0, 2, 2, 2, 2, 2, 1, -1, 2, 2, 2, 2},
+    {0, 2, 1, 1, 2, 2, 1, -1, 2, 2, 1, 2},
+    {0, 1, 1, 1, 2, 2, 1, -1, 1, 1, 1, 2},
+    {0, 1, 1, 1, 2, 2, 1, -1, 1, 1, 1, 2},
+    {0, 1, 1, 1, 2, 2, 1, -1, 1, 1, 1, 2}, // key 48
+    {1, 0, 0, 0, 2, 2, 1, -1, 0, 1, 0, 2},
+    {1, 0, 0, 0, 2, 2, 1, -1, 0, 0, 0, 2},
+    {1, 0, 0, 0, 2, 2, 1, -1, 0, 0, 0, 2},
+    {1, -1, -1, -1, 2, 2, 1, -1, -1, 0, -1, 2},
+    {1, -1, -1, -1, 2, 2, 1, -1, -1, 0, -1, 0},
+    {1, -1, -1, -1, 2, 1, 1, -1, -1, 0, -1, 0},
+    {1, -2, -1, -1, 1, 1, 1, -1, -2, 0, -1, 0},
+    {1, -2, -2, -2, 1, 1, 1, -1, -2, 0, -2, 0}, // key 56
+    {1, -2, -2, -2, 1, 1, 1, -1, -2, 0, -2, 0},
+    {1, -2, -2, -2, 1, 1, 1, -1, -2, 0, -2, 0},
+    {2, -2, -2, -2, 1, 0, 1, -1, -2, 0, -2, 0},
+    {2, -2, -2, -2, 0, 0, 1, -1, -2, 0, -2, 0},
+    {2, -2, -2, -2, 0, 0, 1, -1, -2, 0, -2, 0},
+    {2, -2, -2, -2, 0, 0, 1, -1, -2, 0, -2, 0},
+    {2, -2, -2, -2, 0, -1, 1, -1, -2, 0, -2, 0},
+  },
+  { // 32: STOP_IMPACT
+    {0, 3, -5, -5, -8, -8, 0, 0, -2, 2, -4, 1}, // key 00
+    {0, 3, -5, -5, -7, -7, 0, 0, -1, 2, -4, 1},
+    {0, 3, -4, -4, -7, -7, 0, 0, -1, 2, -3, 1},
+    {0, 2, -4, -4, -6, -6, 0, 0, -1, 2, -3, 1},
+    {0, 2, -3, -3, -5, -5, 0, 0, -1, 1, -3, 0},
+    {-1, 2, -3, -3, -4, -4, 0, 0, -1, 1, -2, 0},
+    {-1, 2, -2, -2, -4, -4, 0, 0, -1, 1, -2, 0},
+    {-1, 1, -2, -2, -3, -3, 0, 0, -1, 1, -2, 0},
+    {0, 1, -1, -1, -2, -2, 0, 0, 0, 1, -1, 0}, // key 08
+    {0, 1, -1, -1, -2, -2, 0, 0, 0, 0, -1, 0},
+    {0, 1, 0, 0, -1, -1, 0, 0, 0, 0, -1, 0},
+    {0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0}, // key 16
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0}, // key 24
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0}, // key 32
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // key 40
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // key 48
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // key 56
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, -1, -1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, -1, -1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, -1, -1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, -1, -1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, -1, -1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, -1, -1, 0, 0, 0, 0, 0, 0},
+  },
+  { // 33: STOP_SETTLE
+    {0, 3, -5, -5, -8, -8, 0, 0, -2, 2, -4, 1}, // key 00
+    {0, 3, -5, -5, -7, -7, 0, 0, -1, 2, -4, 1},
+    {0, 3, -4, -4, -7, -7, 0, 0, -1, 2, -3, 1},
+    {0, 2, -4, -4, -6, -6, 0, 0, -1, 2, -3, 1},
+    {1, 2, -3, -3, -5, -5, 0, 0, -1, 1, -3, 0},
+    {1, 2, -3, -3, -4, -4, 0, 0, -1, 1, -2, 0},
+    {1, 2, -2, -2, -4, -4, 0, 0, -1, 1, -2, 0},
+    {1, 1, -2, -2, -3, -3, 0, 0, -1, 1, -2, 0},
+    {0, 1, -1, -1, -2, -2, 0, 0, 0, 1, -1, 0}, // key 08
+    {0, 1, -1, -1, -2, -2, 0, 0, 0, 0, -1, 0},
+    {0, 1, 0, 0, -1, -1, 0, 0, 0, 0, -1, 0},
+    {0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0}, // key 16
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0}, // key 24
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0}, // key 32
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // key 40
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // key 48
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // key 56
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, -1, -1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, -1, -1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, -1, -1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, -1, -1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, -1, -1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, -1, -1, 0, 0, 0, 0, 0, 0},
+  },
+  { // 34: STOP_SERIOUS
+    {1, 3, -5, -5, -8, -8, 0, 0, -2, 2, -4, 1}, // key 00
+    {1, 3, -5, -5, -7, -7, 0, 0, -1, 2, -4, 1},
+    {1, 3, -4, -4, -7, -7, 0, 0, -1, 2, -3, 1},
+    {1, 2, -4, -4, -6, -6, 0, 0, -1, 2, -3, 1},
+    {1, 2, -3, -3, -5, -5, 0, 0, -1, 1, -3, 0},
+    {1, 2, -3, -3, -4, -4, 0, 0, -1, 1, -2, 0},
+    {1, 2, -2, -2, -4, -4, 0, 0, -1, 1, -2, 0},
+    {1, 1, -2, -2, -3, -3, 0, 0, -1, 1, -2, 0},
+    {1, 1, -1, -1, -2, -2, 0, 0, 0, 1, -1, 0}, // key 08
+    {0, 1, -1, -1, -2, -2, 0, 0, 0, 0, -1, 0},
+    {0, 1, 0, 0, -1, -1, 0, 0, 0, 0, -1, 0},
+    {0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0}, // key 16
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0}, // key 24
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0}, // key 32
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // key 40
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // key 48
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // key 56
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, -1, -1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, -1, -1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, -1, -1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, -1, -1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, -1, -1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, -1, -1, 0, 0, 0, 0, 0, 0},
+  },
+  { // 35: STOP_EXHALE
+    {1, 3, -5, -5, -8, -8, 0, 0, -2, 2, -4, 1}, // key 00
+    {1, 3, -5, -5, -7, -7, 0, 0, -1, 2, -4, 1},
+    {1, 3, -4, -4, -7, -7, 0, 0, -1, 2, -3, 1},
+    {1, 2, -4, -4, -6, -6, 0, 0, -1, 2, -3, 1},
+    {1, 2, -3, -3, -5, -5, 0, 0, -1, 1, -3, 0},
+    {1, 2, -3, -3, -4, -4, 0, 0, -1, 1, -2, 0},
+    {1, 2, -2, -2, -4, -4, 0, 0, -1, 1, -2, 0},
+    {1, 1, -2, -2, -3, -3, 0, 0, -1, 1, -2, 0},
+    {1, 1, -1, -1, -2, -2, 0, 0, 0, 1, -1, 0}, // key 08
+    {0, 1, -1, -1, -2, -2, 0, 0, 0, 0, -1, 0},
+    {0, 1, 0, 0, -1, -1, 0, 0, 0, 0, -1, 0},
+    {0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0}, // key 16
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0}, // key 24
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0}, // key 32
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // key 40
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // key 48
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // key 56
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, -1, -1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, -1, -1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, -1, -1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, -1, -1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, -1, -1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, -1, -1, 0, 0, 0, 0, 0, 0},
+  },
+  { // 36: LINK_LOST_SURPRISE
+    {2, 1, 1, 2, 2, 2, 1, -1, 1, 1, 1, 1}, // key 00
+    {2, 1, 1, 2, 2, 2, 1, -1, 1, 1, 1, 1},
+    {3, 2, 2, 2, 2, 2, 1, -1, 1, 1, 1, 0},
+    {3, 2, 2, 2, 2, 2, 1, -1, 1, 0, 1, 0},
+    {3, 2, 2, 2, 2, 2, 1, -1, 1, 0, 1, 0},
+    {3, 2, 2, 2, 2, 2, 1, -1, 1, 0, 1, 0},
+    {3, 2, 2, 2, 2, 2, 1, -1, 1, 0, 1, 0},
+    {3, 2, 2, 2, 2, 2, 1, -1, 1, 0, 1, 0},
+    {3, 2, 2, 2, 2, 2, 1, -1, 1, 0, 1, 0}, // key 08
+    {3, 2, 2, 2, 2, 2, 1, -1, 1, 0, 1, 0},
+    {3, 2, 2, 1, 2, 2, 1, -1, 1, 0, 1, 0},
+    {3, 2, 2, 1, 2, 2, 1, -1, 1, 0, 1, 0},
+    {3, 2, 1, 1, 2, 2, 1, -1, 1, 0, 1, 0},
+    {2, 2, 1, 1, 2, 2, 1, -1, 1, 0, 1, 0},
+    {2, 2, 1, 1, 2, 2, 1, -1, 1, 0, 1, 0},
+    {2, 1, 1, 1, 2, 1, 1, -1, 1, 0, 1, 0},
+    {2, 1, 1, 1, 2, 1, 1, -1, 1, 0, 1, 0}, // key 16
+    {2, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 1},
+    {2, 1, 1, 0, 1, 1, 0, 0, 1, 0, 1, 1},
+    {1, 1, 1, 0, 1, 1, 0, 0, 1, 0, 0, 0},
+    {1, 1, 0, 0, 1, 1, 0, 0, 1, 0, 0, 0},
+    {1, 1, 0, 0, 1, 1, 0, 0, 1, 0, 0, 0},
+    {1, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0},
+    {0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0},
+    {0, 1, 0, -1, 0, 0, 0, 0, 1, 0, 0, 0}, // key 24
+    {0, 0, 0, -1, 0, 0, 0, 0, 1, 0, 0, 0},
+    {0, 0, -1, -1, 0, 0, 0, 0, 1, 0, 0, 0},
+    {0, 0, -1, -1, 0, 0, 0, 0, 1, 0, -1, 0},
+    {-1, 0, -1, -1, 0, -1, -1, 1, 1, 0, -1, 0},
+    {-1, 0, -1, -1, 0, -1, -1, 1, 1, 0, -1, 0},
+    {-1, 0, -1, -1, -1, -1, -1, 1, 1, 0, -1, 0},
+    {-1, 0, -1, -1, -1, -1, -1, 1, 1, 0, -1, 0},
+    {-2, -1, -1, -2, -1, -1, -1, 1, 1, 1, -1, 0}, // key 32
+    {-2, -1, -1, -2, -1, -1, -1, 1, 1, 1, -1, 0},
+    {-2, -1, -2, -2, -1, -1, -1, 1, 1, 1, -1, 1},
+    {-2, -1, -2, -2, -1, -2, -1, 1, 0, 0, -1, 1},
+    {-2, -1, -2, -2, -1, -2, -1, 1, 0, 0, -1, 0},
+    {-2, -1, -2, -2, -2, -2, -1, 1, 0, 0, -1, 0},
+    {-3, -1, -2, -2, -2, -2, -1, 1, 0, 0, -1, 0},
+    {-3, -1, -2, -2, -2, -2, -1, 1, 0, 0, -1, 0},
+    {-3, -1, -2, -2, -2, -2, -1, 1, 0, 0, -1, 0}, // key 40
+    {-3, -1, -2, -2, -2, -2, -1, 1, 0, 0, -1, 0},
+    {-3, -2, -2, -1, -2, -2, -1, 1, 0, 0, -1, 0},
+    {-3, -2, -2, -1, -2, -2, -1, 1, 0, 0, -1, 0},
+    {-3, -2, -1, -1, -2, -2, -1, 1, 0, 0, -1, 0},
+    {-3, -2, -1, -1, -2, -2, -1, 1, 0, 0, -1, 0},
+    {-3, -2, -1, -1, -2, -2, -1, 1, 0, 0, -1, 0},
+    {-3, -2, -1, -1, -2, -2, -1, 1, 0, 0, -1, 0},
+    {-3, -2, -1, -1, -2, -2, -1, 1, 0, 0, -1, 0}, // key 48
+    {-2, -2, -1, -1, -2, -2, -1, 1, 0, 0, -1, 0},
+    {-2, -2, -1, 0, -2, -2, 0, 0, 0, 0, -1, 0},
+    {-2, -2, -1, 0, -2, -2, 0, 0, 0, 0, 0, 1},
+    {-2, -2, 0, 0, -2, -2, 0, 0, 0, 0, 0, 1},
+    {-2, -2, 0, 0, -2, -1, 0, 0, 0, 0, 0, 0},
+    {-2, -2, 0, 0, -1, -1, 0, 0, 0, 0, 0, 0},
+    {-1, -1, 0, 0, -1, -1, 0, 0, 0, 0, 0, 0},
+    {-1, -1, 0, 1, -1, -1, 0, 0, -1, 0, 0, 0}, // key 56
+    {-1, -1, 0, 1, -1, -1, 0, 0, -1, 0, 0, 0},
+    {-1, -1, 1, 1, -1, -1, 0, 0, -1, 0, 0, 0},
+    {0, -1, 1, 1, -1, -1, 0, 0, -1, 0, 1, 0},
+    {0, -1, 1, 1, -1, 0, 1, -1, -1, 0, 1, 0},
+    {0, -1, 1, 1, -1, 0, 1, -1, -1, 0, 1, 0},
+    {0, -1, 1, 1, 0, 0, 1, -1, -1, 0, 1, 0},
+    {1, -1, 1, 1, 0, 0, 1, -1, -1, 0, 1, 0},
+  },
+  { // 37: LINK_LOST_BLINK
+    {3, 2, 2, 2, 2, 2, 1, -1, 1, 1, 1, 1}, // key 00
+    {3, 2, 2, 2, 2, 2, 1, -1, 1, 1, 1, 1},
+    {3, 2, 2, 2, 2, 2, 1, -1, 1, 1, 1, 0},
+    {3, 2, 2, 2, 2, 2, 1, -1, 1, 0, 1, 0},
+    {3, 2, 2, 2, 2, 2, 1, -1, 1, 0, 1, 0},
+    {3, 2, 2, 2, 2, 2, 1, -1, 1, 0, 1, 0},
+    {3, 2, 2, 2, 2, 2, 1, -1, 1, 0, 1, 0},
+    {2, 2, 2, 1, 2, 2, 1, -1, 1, 0, 1, 0},
+    {2, 2, 2, 1, 2, 2, 1, -1, 1, 0, 1, 0}, // key 08
+    {2, 2, 1, 1, 2, 2, 1, -1, 1, 0, 1, 0},
+    {2, 2, 1, 1, 2, 2, 1, -1, 1, 0, 1, 0},
+    {2, 1, 1, 1, 2, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 2, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {0, 1, 1, 0, 1, 1, 0, 0, 1, 0, 0, 0},
+    {0, 1, 1, 0, 1, 1, 0, 0, 1, 0, 0, 0}, // key 16
+    {0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 0, 1},
+    {-1, 1, 0, 0, 1, 1, 0, 0, 1, 0, 0, 1},
+    {-1, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0},
+    {-1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0},
+    {-2, 0, 0, -1, 0, 0, 0, 0, 1, 0, 0, 0},
+    {-2, 0, 0, -1, 0, 0, 0, 0, 1, 0, 0, 0},
+    {-2, 0, -1, -1, 0, 0, 0, 0, 1, 0, 0, 0},
+    {-2, 0, -1, -1, 0, 0, 0, 0, 1, 0, -1, 0}, // key 24
+    {-2, 0, -1, -1, 0, -1, -1, 1, 1, 0, -1, 0},
+    {-3, 0, -1, -1, -1, -1, -1, 1, 1, 0, -1, 0},
+    {-3, 0, -1, -1, -1, -1, -1, 1, 1, 0, -1, 0},
+    {-3, 0, -1, -1, -1, -1, -1, 1, 1, 0, -1, 0},
+    {-3, -1, -1, -2, -1, -1, -1, 1, 0, 0, -1, 0},
+    {-3, -1, -1, -2, -1, -1, -1, 1, 0, 0, -1, 0},
+    {-3, -1, -2, -2, -1, -1, -1, 1, 0, 0, -1, 0},
+    {-3, -1, -2, -2, -1, -2, -1, 1, 0, 1, -1, 0}, // key 32
+    {-3, -1, -2, -2, -2, -2, -1, 1, 0, 1, -1, 0},
+    {-2, -1, -2, -2, -2, -2, -1, 1, 0, 1, -1, 1},
+    {-2, -1, -2, -2, -2, -2, -1, 1, 0, 0, -1, 1},
+    {-2, -1, -2, -2, -2, -2, -1, 1, 0, 0, -1, 0},
+    {-2, -1, -2, -2, -2, -2, -1, 1, 0, 0, -1, 0},
+    {-2, -2, -2, -2, -2, -2, -1, 1, 0, 0, -1, 0},
+    {-1, -2, -2, -1, -2, -2, -1, 1, 0, 0, -1, 0},
+    {-1, -2, -2, -1, -2, -2, -1, 1, 0, 0, -1, 0}, // key 40
+    {-1, -2, -1, -1, -2, -2, -1, 1, 0, 0, -1, 0},
+    {0, -2, -1, -1, -2, -2, -1, 1, 0, 0, -1, 0},
+    {0, -2, -1, -1, -2, -2, -1, 1, 0, 0, -1, 0},
+    {0, -2, -1, -1, -2, -2, -1, 1, 0, 0, -1, 0},
+    {1, -2, -1, -1, -2, -2, -1, 1, 0, 0, -1, 0},
+    {1, -2, -1, -1, -2, -2, -1, 1, 0, 0, -1, 0},
+    {1, -2, -1, 0, -2, -2, 0, 0, 0, 0, 0, 0},
+    {2, -2, -1, 0, -2, -2, 0, 0, 0, 0, 0, 0}, // key 48
+    {2, -2, 0, 0, -2, -1, 0, 0, 0, 0, 0, 0},
+    {2, -2, 0, 0, -2, -1, 0, 0, -1, 0, 0, 0},
+    {2, -1, 0, 0, -1, -1, 0, 0, -1, 0, 0, 1},
+    {2, -1, 0, 0, -1, -1, 0, 0, -1, 0, 0, 1},
+    {3, -1, 0, 1, -1, -1, 0, 0, -1, 0, 0, 0},
+    {3, -1, 0, 1, -1, -1, 0, 0, -1, 0, 0, 0},
+    {3, -1, 1, 1, -1, -1, 0, 0, -1, 0, 0, 0},
+    {3, -1, 1, 1, -1, 0, 0, 0, -1, 0, 1, 0}, // key 56
+    {3, -1, 1, 1, -1, 0, 1, -1, -1, 0, 1, 0},
+    {3, -1, 1, 1, 0, 0, 1, -1, -1, 0, 1, 0},
+    {3, -1, 1, 1, 0, 0, 1, -1, -1, 0, 1, 0},
+    {3, -1, 1, 1, 0, 0, 1, -1, -1, 0, 1, 0},
+    {2, 0, 1, 2, 0, 0, 1, -1, -1, 0, 1, 0},
+    {2, 0, 1, 2, 0, 1, 1, -1, -1, 0, 1, 0},
+    {2, 0, 2, 2, 0, 1, 1, -1, -1, 0, 1, 0},
+  },
+  { // 38: LINK_SEARCH_LEFT
+    {3, 2, 2, 2, 2, 2, 1, -1, 1, 1, 1, 1}, // key 00
+    {3, 2, 2, 2, 2, 2, 1, -1, 1, 1, 1, 1},
+    {3, 2, 2, 2, 2, 2, 1, -1, 1, 1, 1, 0},
+    {3, 2, 2, 2, 2, 2, 1, -1, 1, 0, 1, 0},
+    {3, 2, 2, 1, 2, 2, 1, -1, 1, 0, 1, 0},
+    {3, 2, 2, 1, 2, 2, 1, -1, 1, 0, 1, 0},
+    {2, 2, 1, 1, 2, 2, 1, -1, 1, 0, 1, 0},
+    {2, 1, 1, 1, 2, 2, 1, -1, 1, 0, 1, 0},
+    {2, 1, 1, 1, 2, 1, 1, -1, 1, 0, 1, 0}, // key 08
+    {2, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {2, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {2, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 0, 1, 1, 0, 0, 1, 0, 0, 0},
+    {1, 1, 1, 0, 1, 1, 0, 0, 1, 0, 0, 0},
+    {1, 1, 0, 0, 1, 1, 0, 0, 1, 0, 0, 0},
+    {1, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0},
+    {0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0}, // key 16
+    {0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1},
+    {0, 0, 0, -1, 0, 0, 0, 0, 1, 0, 0, 1},
+    {0, 0, 0, -1, 0, 0, 0, 0, 1, 0, 0, 0},
+    {0, 0, -1, -1, 0, 0, 0, 0, 1, 0, 0, 0},
+    {-1, 0, -1, -1, 0, -1, 0, 0, 1, 0, -1, 0},
+    {-1, 0, -1, -1, 0, -1, -1, 1, 0, 0, -1, 0},
+    {-1, 0, -1, -1, -1, -1, -1, 1, 0, 0, -1, 0},
+    {-1, 0, -1, -1, -1, -1, -1, 1, 0, 0, -1, 0}, // key 24
+    {-2, -1, -1, -1, -1, -1, -1, 1, 0, 0, -1, 0},
+    {-2, -1, -1, -2, -1, -1, -1, 1, 0, 0, -1, 0},
+    {-2, -1, -1, -2, -1, -1, -1, 1, 0, 0, -1, 0},
+    {-2, -1, -2, -2, -1, -2, -1, 1, 0, 0, -1, 0},
+    {-2, -1, -2, -2, -1, -2, -1, 1, 0, 0, -1, 0},
+    {-2, -1, -2, -2, -2, -2, -1, 1, 0, 0, -1, 0},
+    {-3, -1, -2, -2, -2, -2, -1, 1, 0, 0, -1, 0},
+    {-3, -1, -2, -2, -2, -2, -1, 1, 0, 1, -1, 0}, // key 32
+    {-3, -1, -2, -2, -2, -2, -1, 1, 0, 1, -1, 0},
+    {-3, -1, -2, -2, -2, -2, -1, 1, 0, 1, -1, 1},
+    {-3, -2, -2, -2, -2, -2, -1, 1, 0, 0, -1, 1},
+    {-3, -2, -2, -1, -2, -2, -1, 1, 0, 0, -1, 0},
+    {-3, -2, -2, -1, -2, -2, -1, 1, 0, 0, -1, 0},
+    {-3, -2, -1, -1, -2, -2, -1, 1, 0, 0, -1, 0},
+    {-3, -2, -1, -1, -2, -2, -1, 1, 0, 0, -1, 0},
+    {-3, -2, -1, -1, -2, -2, -1, 1, 0, 0, -1, 0}, // key 40
+    {-3, -2, -1, -1, -2, -2, -1, 1, 0, 0, -1, 0},
+    {-2, -2, -1, -1, -2, -2, -1, 1, 0, 0, -1, 0},
+    {-2, -2, -1, -1, -2, -2, -1, 1, 0, 0, -1, 0},
+    {-2, -2, -1, 0, -2, -2, 0, 0, -1, 0, 0, 0},
+    {-2, -2, -1, 0, -2, -1, 0, 0, -1, 0, 0, 0},
+    {-2, -2, 0, 0, -2, -1, 0, 0, -1, 0, 0, 0},
+    {-2, -1, 0, 0, -1, -1, 0, 0, -1, 0, 0, 0},
+    {-1, -1, 0, 0, -1, -1, 0, 0, -1, 0, 0, 0}, // key 48
+    {-1, -1, 0, 0, -1, -1, 0, 0, -1, 0, 0, 0},
+    {-1, -1, 0, 1, -1, -1, 0, 0, -1, 0, 0, 0},
+    {-1, -1, 0, 1, -1, -1, 0, 0, -1, 0, 0, 1},
+    {0, -1, 1, 1, -1, -1, 0, 0, -1, 0, 0, 1},
+    {0, -1, 1, 1, -1, 0, 0, 0, -1, 0, 1, 0},
+    {0, -1, 1, 1, 0, 0, 1, -1, -1, 0, 1, 0},
+    {0, -1, 1, 1, 0, 0, 1, -1, -1, 0, 1, 0},
+    {1, -1, 1, 1, 0, 0, 1, -1, -1, 0, 1, 0}, // key 56
+    {1, 0, 1, 1, 0, 0, 1, -1, -1, 0, 1, 0},
+    {1, 0, 1, 2, 0, 0, 1, -1, -1, 0, 1, 0},
+    {1, 0, 1, 2, 0, 1, 1, -1, -1, 0, 1, 0},
+    {2, 0, 2, 2, 1, 1, 1, -1, -1, 0, 1, 0},
+    {2, 0, 2, 2, 1, 1, 1, -1, -1, 0, 1, 0},
+    {2, 0, 2, 2, 1, 1, 1, -1, -1, 0, 1, 0},
+    {2, 0, 2, 2, 1, 1, 1, -1, -1, 0, 1, 0},
+  },
+  { // 39: LINK_SEARCH_RIGHT
+    {3, 2, 2, 2, 2, 2, 1, -1, 1, 1, 1, 1}, // key 00
+    {3, 2, 2, 1, 2, 2, 1, -1, 1, 1, 1, 1},
+    {2, 2, 2, 1, 2, 2, 1, -1, 1, 1, 1, 0},
+    {2, 1, 1, 1, 2, 2, 1, -1, 1, 0, 1, 0},
+    {2, 1, 1, 1, 2, 1, 1, -1, 1, 0, 1, 0},
+    {2, 1, 1, 1, 2, 1, 1, -1, 1, 0, 1, 0},
+    {2, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 0, 1, 1, 1, -1, 1, 0, 1, 0}, // key 08
+    {1, 1, 1, 0, 1, 1, 0, 0, 1, 0, 0, 0},
+    {0, 1, 1, 0, 1, 1, 0, 0, 1, 0, 0, 0},
+    {0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0},
+    {0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0},
+    {-1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0},
+    {-1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0},
+    {-1, 0, 0, -1, 0, 0, 0, 0, 1, 0, 0, 0},
+    {-2, 0, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0}, // key 16
+    {-2, 0, -1, -1, 0, -1, 0, 0, 0, 0, 0, 1},
+    {-2, 0, -1, -1, 0, -1, -1, 1, 0, 0, -1, 1},
+    {-2, 0, -1, -1, -1, -1, -1, 1, 0, 0, -1, 0},
+    {-2, 0, -1, -1, -1, -1, -1, 1, 0, 0, -1, 0},
+    {-3, -1, -1, -1, -1, -1, -1, 1, 0, 0, -1, 0},
+    {-3, -1, -1, -1, -1, -1, -1, 1, 0, 0, -1, 0},
+    {-3, -1, -1, -2, -1, -1, -1, 1, 0, 0, -1, 0},
+    {-3, -1, -1, -2, -1, -2, -1, 1, 0, 0, -1, 0}, // key 24
+    {-3, -1, -2, -2, -1, -2, -1, 1, 0, 0, -1, 0},
+    {-3, -1, -2, -2, -2, -2, -1, 1, 0, 0, -1, 0},
+    {-3, -1, -2, -2, -2, -2, -1, 1, 0, 0, -1, 0},
+    {-3, -1, -2, -2, -2, -2, -1, 1, 0, 0, -1, 0},
+    {-2, -1, -2, -2, -2, -2, -1, 1, 0, 0, -1, 0},
+    {-2, -1, -2, -2, -2, -2, -1, 1, 0, 0, -1, 0},
+    {-2, -2, -2, -2, -2, -2, -1, 1, 0, 0, -1, 0},
+    {-2, -2, -2, -2, -2, -2, -1, 1, 0, 1, -1, 0}, // key 32
+    {-1, -2, -2, -1, -2, -2, -1, 1, 0, 1, -1, 0},
+    {-1, -2, -2, -1, -2, -2, -1, 1, 0, 1, -1, 1},
+    {-1, -2, -1, -1, -2, -2, -1, 1, 0, 0, -1, 1},
+    {-1, -2, -1, -1, -2, -2, -1, 1, 0, 0, -1, 0},
+    {0, -2, -1, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {0, -2, -1, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {0, -2, -1, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {1, -2, -1, 0, -2, -2, -1, 1, -1, 0, -1, 0}, // key 40
+    {1, -2, -1, 0, -2, -2, 0, 0, -1, 0, 0, 0},
+    {1, -2, -1, 0, -2, -1, 0, 0, -1, 0, 0, 0},
+    {2, -1, 0, 0, -1, -1, 0, 0, -1, 0, 0, 0},
+    {2, -1, 0, 0, -1, -1, 0, 0, -1, 0, 0, 0},
+    {2, -1, 0, 0, -1, -1, 0, 0, -1, 0, 0, 0},
+    {2, -1, 0, 0, -1, -1, 0, 0, -1, 0, 0, 0},
+    {3, -1, 0, 1, -1, -1, 0, 0, -1, 0, 0, 0},
+    {3, -1, 0, 1, -1, -1, 0, 0, -1, 0, 0, 0}, // key 48
+    {3, -1, 1, 1, -1, 0, 0, 0, -1, 0, 0, 0},
+    {3, -1, 1, 1, 0, 0, 1, -1, -1, 0, 1, 0},
+    {3, -1, 1, 1, 0, 0, 1, -1, -1, 0, 1, 1},
+    {3, -1, 1, 1, 0, 0, 1, -1, -1, 0, 1, 1},
+    {3, 0, 1, 1, 0, 0, 1, -1, -1, 0, 1, 0},
+    {3, 0, 1, 1, 0, 0, 1, -1, -1, 0, 1, 0},
+    {2, 0, 1, 2, 0, 1, 1, -1, -1, 0, 1, 0},
+    {2, 0, 1, 2, 0, 1, 1, -1, -1, 0, 1, 0}, // key 56
+    {2, 0, 2, 2, 1, 1, 1, -1, -1, 0, 1, 0},
+    {2, 0, 2, 2, 1, 1, 1, -1, -1, 0, 1, 0},
+    {2, 0, 2, 2, 1, 1, 1, -1, -1, 0, 1, 0},
+    {1, 0, 2, 2, 1, 1, 1, -1, -1, 0, 1, 0},
+    {1, 1, 2, 2, 1, 1, 1, -1, -1, 0, 1, 0},
+    {1, 1, 2, 2, 1, 2, 1, -1, -1, 0, 1, 0},
+    {0, 1, 2, 2, 1, 2, 1, -1, -1, 0, 1, 0},
+  },
+  { // 40: LINK_SAD_SETTLE
+    {2, 1, 1, 1, 2, 1, 1, -1, 1, 1, 1, 1}, // key 00
+    {2, 1, 1, 1, 2, 1, 1, -1, 1, 1, 1, 1},
+    {2, 1, 1, 1, 1, 1, 1, -1, 1, 1, 1, 0},
+    {2, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {2, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 0, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 0, 1, 1, 0, 0, 1, 0, 0, 0},
+    {1, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0},
+    {1, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0}, // key 08
+    {0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, -1, -1, 0, -1, 0, 0, 0, 0, 0, 0},
+    {-1, 0, -1, -1, 0, -1, 0, 0, 0, 0, 0, 0},
+    {-1, 0, -1, -1, -1, -1, -1, 1, 0, 0, -1, 0},
+    {-1, 0, -1, -1, -1, -1, -1, 1, 0, 0, -1, 0}, // key 16
+    {-1, -1, -1, -1, -1, -1, -1, 1, 0, 0, -1, 1},
+    {-2, -1, -1, -1, -1, -1, -1, 1, 0, 0, -1, 1},
+    {-2, -1, -1, -2, -1, -1, -1, 1, 0, 0, -1, 0},
+    {-2, -1, -1, -2, -1, -1, -1, 1, 0, 0, -1, 0},
+    {-2, -1, -2, -2, -1, -2, -1, 1, 0, 0, -1, 0},
+    {-2, -1, -2, -2, -2, -2, -1, 1, 0, 0, -1, 0},
+    {-2, -1, -2, -2, -2, -2, -1, 1, 0, 0, -1, 0},
+    {-3, -1, -2, -2, -2, -2, -1, 1, 0, 0, -1, 0}, // key 24
+    {-3, -1, -2, -2, -2, -2, -1, 1, 0, 0, -1, 0},
+    {-3, -1, -2, -2, -2, -2, -1, 1, 0, 0, -1, 0},
+    {-3, -2, -2, -2, -2, -2, -1, 1, 0, 0, -1, 0},
+    {-3, -2, -2, -2, -2, -2, -1, 1, 0, 0, -1, 0},
+    {-3, -2, -2, -1, -2, -2, -1, 1, 0, 0, -1, 0},
+    {-3, -2, -2, -1, -2, -2, -1, 1, 0, 0, -1, 0},
+    {-3, -2, -1, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-3, -2, -1, -1, -2, -2, -1, 1, -1, 1, -1, 0}, // key 32
+    {-3, -2, -1, -1, -2, -2, -1, 1, -1, 1, -1, 0},
+    {-3, -2, -1, -1, -2, -2, -1, 1, -1, 1, -1, 1},
+    {-2, -2, -1, -1, -2, -2, -1, 1, -1, 0, -1, 1},
+    {-2, -2, -1, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-2, -2, -1, 0, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-2, -2, -1, 0, -2, -1, 0, 0, -1, 0, 0, 0},
+    {-2, -1, 0, 0, -2, -1, 0, 0, -1, 0, 0, 0},
+    {-2, -1, 0, 0, -1, -1, 0, 0, -1, 0, 0, 0}, // key 40
+    {-1, -1, 0, 0, -1, -1, 0, 0, -1, 0, 0, 0},
+    {-1, -1, 0, 0, -1, -1, 0, 0, -1, 0, 0, 0},
+    {-1, -1, 0, 1, -1, -1, 0, 0, -1, 0, 0, 0},
+    {-1, -1, 0, 1, -1, -1, 0, 0, -1, 0, 0, 0},
+    {0, -1, 1, 1, -1, 0, 0, 0, -1, 0, 0, 0},
+    {0, -1, 1, 1, -1, 0, 0, 0, -1, 0, 0, 0},
+    {0, -1, 1, 1, 0, 0, 1, -1, -1, 0, 1, 0},
+    {0, -1, 1, 1, 0, 0, 1, -1, -1, 0, 1, 0}, // key 48
+    {1, 0, 1, 1, 0, 0, 1, -1, -1, 0, 1, 0},
+    {1, 0, 1, 1, 0, 0, 1, -1, -1, 0, 1, 0},
+    {1, 0, 1, 2, 0, 1, 1, -1, -1, 0, 1, 1},
+    {1, 0, 1, 2, 0, 1, 1, -1, -1, 0, 1, 1},
+    {2, 0, 2, 2, 1, 1, 1, -1, -1, 0, 1, 0},
+    {2, 0, 2, 2, 1, 1, 1, -1, -1, 0, 1, 0},
+    {2, 0, 2, 2, 1, 1, 1, -1, -1, 0, 1, 0},
+    {2, 0, 2, 2, 1, 1, 1, -1, -1, 0, 1, 0}, // key 56
+    {2, 1, 2, 2, 1, 1, 1, -1, -1, 0, 1, 0},
+    {2, 1, 2, 2, 1, 2, 1, -1, -1, 0, 1, 0},
+    {2, 1, 2, 2, 1, 2, 1, -1, -1, 0, 1, 0},
+    {3, 1, 2, 2, 2, 2, 1, -1, -1, 0, 1, 0},
+    {3, 1, 2, 1, 2, 2, 1, -1, -1, 0, 1, 0},
+    {3, 1, 2, 1, 2, 2, 1, -1, -1, 0, 1, 0},
+    {3, 1, 1, 1, 2, 2, 1, -1, -1, 0, 1, 0},
+  },
+  { // 41: LINK_WAIT
+    {2, 1, 1, 1, 1, 1, 1, -1, 1, 1, 1, 1}, // key 00
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 1, 1, 1},
+    {1, 1, 1, 0, 1, 1, 0, 0, 1, 1, 1, 0},
+    {1, 1, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {-1, 0, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0}, // key 08
+    {-1, 0, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0},
+    {-1, 0, -1, -1, 0, -1, 0, 0, 0, 0, 0, 0},
+    {-2, 0, -1, -1, -1, -1, 0, 0, 0, 0, 0, 0},
+    {-2, 0, -1, -1, -1, -1, -1, 1, 0, 0, -1, 0},
+    {-2, -1, -1, -1, -1, -1, -1, 1, 0, 0, -1, 0},
+    {-2, -1, -1, -1, -1, -1, -1, 1, 0, 0, -1, 0},
+    {-3, -1, -1, -1, -1, -1, -1, 1, 0, 0, -1, 0},
+    {-3, -1, -1, -2, -1, -1, -1, 1, 0, 0, -1, 0}, // key 16
+    {-3, -1, -1, -2, -1, -2, -1, 1, 0, 0, -1, 1},
+    {-3, -1, -2, -2, -1, -2, -1, 1, 0, 0, -1, 1},
+    {-3, -1, -2, -2, -2, -2, -1, 1, 0, 0, -1, 0},
+    {-3, -1, -2, -2, -2, -2, -1, 1, 0, 0, -1, 0},
+    {-3, -1, -2, -2, -2, -2, -1, 1, 0, 0, -1, 0},
+    {-3, -1, -2, -2, -2, -2, -1, 1, 0, 0, -1, 0},
+    {-2, -2, -2, -2, -2, -2, -1, 1, 0, 0, -1, 0},
+    {-2, -2, -2, -2, -2, -2, -1, 1, 0, 0, -1, 0}, // key 24
+    {-2, -2, -2, -2, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-2, -2, -2, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-2, -2, -2, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-1, -2, -1, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-1, -2, -1, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-1, -2, -1, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {0, -2, -1, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {0, -2, -1, -1, -2, -2, -1, 1, -1, 1, -1, 0}, // key 32
+    {0, -2, -1, -1, -2, -2, -1, 1, -1, 1, -1, 0},
+    {1, -2, -1, 0, -2, -1, 0, 0, -1, 1, -1, 1},
+    {1, -1, -1, 0, -2, -1, 0, 0, -1, 0, 0, 1},
+    {1, -1, 0, 0, -1, -1, 0, 0, -1, 0, 0, 0},
+    {1, -1, 0, 0, -1, -1, 0, 0, -1, 0, 0, 0},
+    {2, -1, 0, 0, -1, -1, 0, 0, -1, 0, 0, 0},
+    {2, -1, 0, 0, -1, -1, 0, 0, -1, 0, 0, 0},
+    {2, -1, 0, 1, -1, -1, 0, 0, -1, 0, 0, 0}, // key 40
+    {2, -1, 0, 1, -1, 0, 0, 0, -1, 0, 0, 0},
+    {3, -1, 1, 1, -1, 0, 0, 0, -1, 0, 0, 0},
+    {3, -1, 1, 1, 0, 0, 0, 0, -1, 0, 0, 0},
+    {3, -1, 1, 1, 0, 0, 1, -1, -1, 0, 1, 0},
+    {3, 0, 1, 1, 0, 0, 1, -1, -1, 0, 1, 0},
+    {3, 0, 1, 1, 0, 0, 1, -1, -1, 0, 1, 0},
+    {3, 0, 1, 1, 0, 1, 1, -1, -1, 0, 1, 0},
+    {3, 0, 1, 2, 0, 1, 1, -1, -1, 0, 1, 0}, // key 48
+    {3, 0, 1, 2, 1, 1, 1, -1, -1, 0, 1, 0},
+    {2, 0, 2, 2, 1, 1, 1, -1, -1, 0, 1, 0},
+    {2, 0, 2, 2, 1, 1, 1, -1, -1, 0, 1, 1},
+    {2, 0, 2, 2, 1, 1, 1, -1, -1, 0, 1, 1},
+    {2, 1, 2, 2, 1, 1, 1, -1, -1, 0, 1, 0},
+    {2, 1, 2, 2, 1, 1, 1, -1, -1, 0, 1, 0},
+    {1, 1, 2, 2, 1, 2, 1, -1, -1, 0, 1, 0},
+    {1, 1, 2, 2, 2, 2, 1, -1, -1, 0, 1, 0}, // key 56
+    {1, 1, 2, 2, 2, 2, 1, -1, -1, 0, 1, 0},
+    {0, 1, 2, 1, 2, 2, 1, -1, -1, 0, 1, 0},
+    {0, 1, 2, 1, 2, 2, 1, -1, -1, 0, 1, 0},
+    {0, 1, 1, 1, 2, 2, 1, -1, -1, 0, 1, 0},
+    {-1, 1, 1, 1, 2, 2, 1, -1, -1, 0, 1, 0},
+    {-1, 1, 1, 1, 2, 2, 1, -1, -1, 0, 1, 0},
+    {-1, 2, 1, 1, 2, 2, 1, -1, -1, 0, 1, 0},
+  },
+  { // 42: LINK_RETRY
+    {1, 1, 1, 0, 1, 0, 0, 0, 0, 1, 0, 1}, // key 00
+    {1, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 1},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, -1, 0, -1, 0, 0, 0, 0, 0, 0},
+    {-1, 0, -1, -1, 0, -1, 0, 0, 0, 0, 0, 0},
+    {-1, 0, -1, -1, -1, -1, 0, 0, 0, 0, -1, 0}, // key 08
+    {-1, -1, -1, -1, -1, -1, -1, 1, 0, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, -1, 1, 0, 0, -1, 0},
+    {-2, -1, -1, -1, -1, -1, -1, 1, 0, 0, -1, 0},
+    {-2, -1, -1, -1, -1, -1, -1, 1, 0, 0, -1, 0},
+    {-2, -1, -1, -2, -1, -2, -1, 1, 0, 0, -1, 0},
+    {-2, -1, -1, -2, -1, -2, -1, 1, 0, 0, -1, 0},
+    {-2, -1, -2, -2, -2, -2, -1, 1, 0, 0, -1, 0},
+    {-2, -1, -2, -2, -2, -2, -1, 1, 0, 0, -1, 0}, // key 16
+    {-3, -1, -2, -2, -2, -2, -1, 1, 0, 0, -1, 1},
+    {-3, -1, -2, -2, -2, -2, -1, 1, -1, 0, -1, 1},
+    {-3, -2, -2, -2, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-3, -2, -2, -2, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-3, -2, -2, -2, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-3, -2, -2, -2, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-3, -2, -2, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-3, -2, -2, -1, -2, -2, -1, 1, -1, 0, -1, 0}, // key 24
+    {-3, -2, -1, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-3, -2, -1, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-3, -2, -1, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-2, -2, -1, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-2, -2, -1, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-2, -2, -1, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -1, 0, -2, -1, 0, 0, -1, 0, -1, 0},
+    {-2, -1, -1, 0, -1, -1, 0, 0, -1, 1, 0, 0}, // key 32
+    {-2, -1, 0, 0, -1, -1, 0, 0, -1, 1, 0, 0},
+    {-1, -1, 0, 0, -1, -1, 0, 0, -1, 1, 0, 1},
+    {-1, -1, 0, 0, -1, -1, 0, 0, -1, 0, 0, 1},
+    {-1, -1, 0, 0, -1, -1, 0, 0, -1, 0, 0, 0},
+    {-1, -1, 0, 1, -1, -1, 0, 0, -1, 0, 0, 0},
+    {0, -1, 0, 1, -1, 0, 0, 0, -1, 0, 0, 0},
+    {0, -1, 1, 1, 0, 0, 0, 0, -1, 0, 0, 0},
+    {0, -1, 1, 1, 0, 0, 0, 0, -1, 0, 1, 0}, // key 40
+    {0, 0, 1, 1, 0, 0, 1, -1, -1, 0, 1, 0},
+    {1, 0, 1, 1, 0, 0, 1, -1, -1, 0, 1, 0},
+    {1, 0, 1, 1, 0, 0, 1, -1, -1, 0, 1, 0},
+    {1, 0, 1, 1, 0, 1, 1, -1, -1, 0, 1, 0},
+    {1, 0, 1, 2, 1, 1, 1, -1, -1, 0, 1, 0},
+    {2, 0, 1, 2, 1, 1, 1, -1, -1, 0, 1, 0},
+    {2, 0, 2, 2, 1, 1, 1, -1, -1, 0, 1, 0},
+    {2, 0, 2, 2, 1, 1, 1, -1, -1, 0, 1, 0}, // key 48
+    {2, 1, 2, 2, 1, 1, 1, -1, -1, 0, 1, 0},
+    {2, 1, 2, 2, 1, 1, 1, -1, -1, 0, 1, 0},
+    {2, 1, 2, 2, 1, 2, 1, -1, -1, 0, 1, 1},
+    {2, 1, 2, 2, 1, 2, 1, -1, -1, 0, 1, 1},
+    {3, 1, 2, 2, 2, 2, 1, -1, -1, 0, 1, 0},
+    {3, 1, 2, 2, 2, 2, 1, -1, -1, 0, 1, 0},
+    {3, 1, 2, 1, 2, 2, 1, -1, -1, 0, 1, 0},
+    {3, 1, 2, 1, 2, 2, 1, -1, -1, 0, 1, 0}, // key 56
+    {3, 1, 1, 1, 2, 2, 1, -1, -1, 0, 1, 0},
+    {3, 1, 1, 1, 2, 2, 1, -1, -1, 0, 1, 0},
+    {3, 2, 1, 1, 2, 2, 1, -1, -1, 0, 1, 0},
+    {3, 2, 1, 1, 2, 2, 1, -1, -1, 0, 1, 0},
+    {3, 2, 1, 1, 2, 2, 1, -1, 0, 0, 1, 0},
+    {3, 2, 1, 1, 2, 2, 1, -1, 0, 0, 1, 0},
+    {2, 2, 1, 0, 2, 2, 0, 0, 0, 0, 1, 0},
+  },
+  { // 43: LINK_RECOVER
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1}, // key 00
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1},
+    {-1, 0, 0, -1, 0, -1, 0, 0, 0, 1, 0, 0},
+    {-1, 0, 0, -1, 0, -1, 0, 0, 0, 0, 0, 0},
+    {-1, 0, -1, -1, -1, -1, 0, 0, 0, 0, 0, 0},
+    {-1, -1, -1, -1, -1, -1, 0, 0, 0, 0, -1, 0},
+    {-2, -1, -1, -1, -1, -1, -1, 1, 0, 0, -1, 0},
+    {-2, -1, -1, -1, -1, -1, -1, 1, 0, 0, -1, 0},
+    {-2, -1, -1, -1, -1, -1, -1, 1, 0, 0, -1, 0}, // key 08
+    {-2, -1, -1, -1, -1, -2, -1, 1, 0, 0, -1, 0},
+    {-3, -1, -1, -2, -1, -2, -1, 1, 0, 0, -1, 0},
+    {-3, -1, -1, -2, -2, -2, -1, 1, 0, 0, -1, 0},
+    {-3, -1, -2, -2, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-3, -1, -2, -2, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-3, -1, -2, -2, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-3, -2, -2, -2, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-3, -2, -2, -2, -2, -2, -1, 1, -1, 0, -1, 0}, // key 16
+    {-3, -2, -2, -2, -2, -2, -1, 1, -1, 0, -1, 1},
+    {-2, -2, -2, -2, -2, -2, -1, 1, -1, 0, -1, 1},
+    {-2, -2, -2, -2, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-2, -2, -2, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-2, -2, -2, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-2, -2, -1, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-1, -2, -1, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-1, -2, -1, -1, -2, -2, -1, 1, -1, 0, -1, 0}, // key 24
+    {-1, -2, -1, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {0, -2, -1, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {0, -1, -1, -1, -2, -1, -1, 1, -1, 0, -1, 0},
+    {0, -1, -1, 0, -1, -1, 0, 0, -1, 0, -1, 0},
+    {1, -1, -1, 0, -1, -1, 0, 0, -1, 0, 0, 0},
+    {1, -1, 0, 0, -1, -1, 0, 0, -1, 0, 0, 0},
+    {1, -1, 0, 0, -1, -1, 0, 0, -1, 0, 0, 0},
+    {2, -1, 0, 0, -1, -1, 0, 0, -1, 1, 0, 0}, // key 32
+    {2, -1, 0, 0, -1, -1, 0, 0, -1, 1, 0, 0},
+    {2, -1, 0, 1, -1, 0, 0, 0, -1, 1, 0, 1},
+    {2, -1, 0, 1, -1, 0, 0, 0, -1, 0, 0, 1},
+    {2, -1, 1, 1, 0, 0, 0, 0, -1, 0, 0, 0},
+    {3, 0, 1, 1, 0, 0, 0, 0, -1, 0, 1, 0},
+    {3, 0, 1, 1, 0, 0, 1, -1, -1, 0, 1, 0},
+    {3, 0, 1, 1, 0, 0, 1, -1, -1, 0, 1, 0},
+    {3, 0, 1, 1, 0, 1, 1, -1, -1, 0, 1, 0}, // key 40
+    {3, 0, 1, 1, 0, 1, 1, -1, -1, 0, 1, 0},
+    {3, 0, 1, 2, 1, 1, 1, -1, -1, 0, 1, 0},
+    {3, 0, 1, 2, 1, 1, 1, -1, -1, 0, 1, 0},
+    {3, 0, 2, 2, 1, 1, 1, -1, -1, 0, 1, 0},
+    {2, 1, 2, 2, 1, 1, 1, -1, -1, 0, 1, 0},
+    {2, 1, 2, 2, 1, 1, 1, -1, -1, 0, 1, 0},
+    {2, 1, 2, 2, 1, 2, 1, -1, -1, 0, 1, 0},
+    {2, 1, 2, 2, 1, 2, 1, -1, -1, 0, 1, 0}, // key 48
+    {1, 1, 2, 2, 2, 2, 1, -1, -1, 0, 1, 0},
+    {1, 1, 2, 2, 2, 2, 1, -1, -1, 0, 1, 0},
+    {1, 1, 2, 2, 2, 2, 1, -1, -1, 0, 1, 1},
+    {1, 1, 2, 1, 2, 2, 1, -1, -1, 0, 1, 1},
+    {0, 1, 2, 1, 2, 2, 1, -1, -1, 0, 1, 0},
+    {0, 1, 1, 1, 2, 2, 1, -1, -1, 0, 1, 0},
+    {0, 2, 1, 1, 2, 2, 1, -1, 0, 0, 1, 0},
+    {-1, 2, 1, 1, 2, 2, 1, -1, 0, 0, 1, 0}, // key 56
+    {-1, 2, 1, 1, 2, 2, 1, -1, 0, 0, 1, 0},
+    {-1, 2, 1, 1, 2, 2, 1, -1, 0, 0, 1, 0},
+    {-2, 2, 1, 1, 2, 2, 1, -1, 0, 0, 1, 0},
+    {-2, 2, 1, 0, 2, 2, 0, 0, 0, 0, 1, 0},
+    {-2, 2, 1, 0, 2, 2, 0, 0, 0, 0, 0, 0},
+    {-2, 2, 0, 0, 2, 2, 0, 0, 0, 0, 0, 0},
+    {-2, 2, 0, 0, 2, 2, 0, 0, 0, 0, 0, 0},
+  },
+  { // 44: WAKE_ANTICIPATE
+    {0, 0, 0, 0, 0, 0, 3, -3, -2, 1, 0, 1}, // key 00
+    {1, 0, 0, 0, 0, 0, 3, -3, -1, 1, 0, 1},
+    {1, 0, 0, 0, 0, 1, 4, -4, -1, 1, 1, 0},
+    {2, 0, 0, 1, 1, 1, 4, -4, -1, 0, 1, 0},
+    {2, 0, 0, 1, 1, 1, 4, -4, -1, 0, 1, 0},
+    {2, 0, 1, 1, 1, 1, 4, -4, -1, 0, 1, 0},
+    {2, 0, 1, 1, 1, 1, 4, -4, -1, 0, 1, 0},
+    {2, 1, 1, 1, 1, 1, 4, -4, -1, 0, 1, 0},
+    {2, 1, 1, 1, 1, 2, 4, -4, -1, 0, 1, 0}, // key 08
+    {2, 1, 1, 1, 2, 2, 4, -4, -1, 0, 1, 0},
+    {2, 1, 1, 1, 2, 2, 4, -4, -1, 0, 1, 0},
+    {1, 1, 1, 1, 2, 2, 4, -4, -1, 0, 1, 0},
+    {0, 1, 1, 1, 2, 2, 3, -3, -1, 0, 0, 0},
+    {0, 1, 1, 1, 2, 2, 3, -3, -1, 0, 0, 0},
+    {-1, 1, 1, 2, 2, 2, 3, -3, -1, 0, 0, 0},
+    {-1, 1, 1, 2, 2, 2, 2, -2, -1, 0, -1, 0},
+    {-2, 1, 2, 2, 2, 2, 2, -2, 0, 0, -1, 0}, // key 16
+    {-2, 1, 2, 2, 2, 2, 2, -2, -1, 0, -1, 0},
+    {-2, 1, 2, 2, 2, 2, 2, -2, -1, 0, -1, 0},
+    {-2, 1, 2, 2, 2, 2, 2, -2, -1, 0, -1, 1},
+    {-2, 1, 2, 2, 2, 2, 2, -2, -1, 0, -1, 1},
+    {-2, 1, 2, 2, 2, 2, 2, -2, -1, 0, -1, 0},
+    {-2, 1, 2, 2, 2, 2, 2, -2, -1, 0, -1, 0},
+    {-1, 1, 2, 2, 2, 1, 2, -2, -1, 0, -1, 0},
+    {-1, 1, 2, 2, 1, 1, 3, -3, -1, 0, -1, 0}, // key 24
+    {0, 1, 2, 2, 1, 1, 3, -3, -1, 0, 0, 0},
+    {0, 1, 2, 2, 1, 1, 3, -3, -1, 0, 0, 0},
+    {1, 1, 2, 2, 1, 1, 3, -3, -1, 0, 1, 0},
+    {1, 1, 2, 1, 1, 1, 4, -4, -1, 0, 1, 0},
+    {2, 1, 2, 1, 1, 0, 4, -4, -1, 0, 1, 0},
+    {2, 1, 1, 1, 0, 0, 4, -4, -1, 0, 1, 0},
+    {2, 1, 1, 1, 0, 0, 4, -4, -1, 0, 1, 0},
+    {2, 1, 1, 1, 0, 0, 4, -4, -1, 0, 2, 0}, // key 32
+    {2, 1, 1, 1, 0, 0, 4, -4, -2, 0, 1, 0},
+    {2, 0, 1, 1, 0, -1, 4, -4, -2, 0, 1, 0},
+    {2, 0, 1, 1, -1, -1, 4, -4, -2, 0, 1, 0},
+    {1, 0, 1, 1, -1, -1, 4, -4, -2, 0, 1, 0},
+    {1, 0, 1, 1, -1, -1, 3, -3, -2, 0, 1, 0},
+    {0, 0, 1, 1, -1, -1, 3, -3, -2, 0, 0, 1},
+    {0, 0, 1, 1, -1, -1, 3, -3, -2, 0, 0, 1},
+    {-1, 0, 1, 0, -1, -2, 3, -3, -2, 1, -1, 0}, // key 40
+    {-1, 0, 1, 0, -2, -2, 2, -2, -2, 1, -1, 0},
+    {-2, 0, 0, 0, -2, -2, 2, -2, -2, 1, -1, 0},
+    {-2, 0, 0, 0, -2, -2, 2, -2, -2, 0, -1, 0},
+    {-2, 0, 0, 0, -2, -2, 2, -2, -2, 0, -1, 0},
+    {-2, 0, 0, 0, -2, -2, 2, -2, -2, 0, -1, 0},
+    {-2, 0, 0, 0, -2, -2, 2, -2, -2, 0, -1, 0},
+    {-2, -1, 0, 0, -2, -2, 2, -2, -2, 0, -1, 0},
+    {-2, -1, 0, -1, -2, -2, 2, -2, -2, 0, -1, 0}, // key 48
+    {-1, -1, 0, -1, -2, -2, 2, -2, -2, 0, -1, 0},
+    {-1, -1, 0, -1, -2, -2, 3, -3, -2, 0, 0, 0},
+    {0, -1, -1, -1, -2, -2, 3, -3, -2, 0, 0, 0},
+    {0, -1, -1, -1, -2, -2, 3, -3, -2, 0, 0, 0},
+    {1, -1, -1, -1, -2, -2, 4, -4, -2, 0, 1, 0},
+    {2, -1, -1, -1, -2, -2, 4, -4, -2, 0, 1, 0},
+    {2, -1, -1, -1, -2, -1, 4, -4, -2, 0, 1, 0},
+    {2, -1, -1, -1, -1, -1, 4, -4, -2, 0, 1, 0}, // key 56
+    {2, -1, -1, -1, -1, -1, 4, -4, -2, 0, 1, 1},
+    {2, -1, -1, -1, -1, -1, 4, -4, -2, 0, 1, 1},
+    {2, -1, -1, -1, -1, -1, 4, -4, -2, 0, 1, 0},
+    {2, -1, -1, -2, -1, -1, 4, -4, -2, 0, 1, 0},
+    {2, -1, -1, -2, -1, 0, 4, -4, -2, 0, 1, 0},
+    {1, -1, -2, -2, 0, 0, 4, -4, -2, 0, 1, 0},
+    {1, -1, -2, -2, 0, 0, 3, -3, -2, 0, 0, 0},
+  },
+  { // 45: WAKE_SNAP_OPEN
+    {1, 0, 1, 1, 1, 1, 3, -3, -1, 1, 0, 1}, // key 00
+    {1, 0, 1, 1, 1, 1, 4, -4, -1, 1, 1, 1},
+    {2, 0, 1, 1, 1, 1, 4, -4, -1, 1, 1, 0},
+    {2, 1, 1, 1, 1, 1, 4, -4, -1, 0, 1, 0},
+    {2, 1, 1, 1, 1, 1, 4, -4, -1, 0, 1, 0},
+    {2, 1, 1, 1, 1, 2, 4, -4, -1, 0, 1, 0},
+    {2, 1, 1, 1, 2, 2, 4, -4, -1, 0, 1, 0},
+    {2, 1, 1, 1, 2, 2, 4, -4, -1, 0, 1, 0},
+    {1, 1, 1, 1, 2, 2, 4, -4, -1, 0, 1, 0}, // key 08
+    {0, 1, 1, 1, 2, 2, 3, -3, -1, 0, 0, 0},
+    {0, 1, 1, 2, 2, 2, 3, -3, -1, 0, 0, 0},
+    {-1, 1, 1, 2, 2, 2, 3, -3, -1, 0, -1, 0},
+    {-2, 1, 2, 2, 2, 2, 2, -2, -1, 0, -1, 0},
+    {-2, 1, 2, 2, 2, 2, 2, -2, -1, 0, -1, 0},
+    {-2, 1, 2, 2, 2, 2, 2, -2, -1, 0, -1, 0},
+    {-2, 1, 2, 2, 2, 2, 2, -2, -1, 0, -1, 0},
+    {-2, 1, 2, 2, 2, 2, 2, -2, -1, 0, -1, 0}, // key 16
+    {-2, 1, 2, 2, 2, 2, 2, -2, -1, 0, -1, 0},
+    {-2, 1, 2, 2, 2, 2, 2, -2, -1, 0, -1, 0},
+    {-1, 1, 2, 2, 2, 1, 3, -3, -1, 0, -1, 1},
+    {0, 1, 2, 2, 2, 1, 3, -3, -1, 0, 0, 1},
+    {1, 1, 2, 2, 1, 1, 3, -3, -1, 0, 0, 0},
+    {1, 1, 2, 2, 1, 1, 4, -4, -1, 0, 1, 0},
+    {2, 1, 2, 2, 1, 1, 4, -4, -1, 0, 1, 0},
+    {2, 1, 2, 1, 1, 1, 4, -4, -1, 0, 1, 0}, // key 24
+    {2, 1, 2, 1, 1, 1, 4, -4, -1, 0, 1, 0},
+    {2, 1, 1, 1, 1, 0, 4, -4, -1, 0, 1, 0},
+    {2, 1, 1, 1, 0, 0, 4, -4, -1, 0, 1, 0},
+    {2, 1, 1, 1, 0, 0, 4, -4, -1, 0, 1, 0},
+    {1, 1, 1, 1, 0, 0, 4, -4, -2, 0, 1, 0},
+    {1, 0, 1, 1, 0, 0, 3, -3, -2, 0, 0, 0},
+    {0, 0, 1, 1, 0, -1, 3, -3, -2, 0, 0, 0},
+    {-1, 0, 1, 1, -1, -1, 3, -3, -2, 0, 0, 0}, // key 32
+    {-1, 0, 1, 1, -1, -1, 2, -2, -2, 0, -1, 0},
+    {-2, 0, 1, 1, -1, -1, 2, -2, -2, 0, -1, 0},
+    {-2, 0, 1, 0, -1, -1, 2, -2, -2, 0, -1, 0},
+    {-2, 0, 1, 0, -1, -1, 2, -2, -2, 0, -1, 0},
+    {-2, 0, 0, 0, -1, -2, 2, -2, -2, 0, -1, 0},
+    {-2, 0, 0, 0, -2, -2, 2, -2, -2, 0, -1, 1},
+    {-2, 0, 0, 0, -2, -2, 2, -2, -2, 0, -1, 1},
+    {-1, 0, 0, 0, -2, -2, 2, -2, -2, 1, -1, 0}, // key 40
+    {0, 0, 0, 0, -2, -2, 3, -3, -2, 1, 0, 0},
+    {0, 0, 0, 0, -2, -2, 3, -3, -2, 1, 0, 0},
+    {1, -1, 0, 0, -2, -2, 3, -3, -2, 0, 1, 0},
+    {2, -1, 0, -1, -2, -2, 4, -4, -2, 0, 1, 0},
+    {2, -1, 0, -1, -2, -2, 4, -4, -2, 0, 1, 0},
+    {2, -1, -1, -1, -2, -2, 4, -4, -2, 0, 1, 0},
+    {2, -1, -1, -1, -2, -2, 4, -4, -2, 0, 1, 0},
+    {2, -1, -1, -1, -2, -2, 4, -4, -2, 0, 1, 0}, // key 48
+    {2, -1, -1, -1, -2, -2, 4, -4, -2, 0, 1, 0},
+    {2, -1, -1, -1, -2, -2, 4, -4, -2, 0, 1, 0},
+    {1, -1, -1, -1, -2, -1, 3, -3, -2, 0, 1, 0},
+    {0, -1, -1, -1, -2, -1, 3, -3, -2, 0, 0, 0},
+    {-1, -1, -1, -1, -1, -1, 3, -3, -2, 0, 0, 0},
+    {-1, -1, -1, -1, -1, -1, 2, -2, -2, 0, -1, 0},
+    {-2, -1, -1, -2, -1, -1, 2, -2, -2, 0, -1, 0},
+    {-2, -1, -1, -2, -1, -1, 2, -2, -2, 0, -1, 0}, // key 56
+    {-2, -1, -2, -2, -1, -1, 2, -2, -2, 0, -1, 1},
+    {-2, -1, -2, -2, -1, 0, 2, -2, -2, 0, -1, 1},
+    {-2, -1, -2, -2, 0, 0, 2, -2, -2, 0, -1, 0},
+    {-2, -1, -2, -2, 0, 0, 2, -2, -2, 0, -1, 0},
+    {-1, -1, -2, -2, 0, 0, 2, -2, -1, 0, -1, 0},
+    {-1, -1, -2, -2, 0, 0, 3, -3, -1, 0, 0, 0},
+    {0, -1, -2, -2, 0, 1, 3, -3, -1, 0, 0, 0},
+  },
+  { // 46: ANGRY_FROWN
+    {1, 1, 1, 1, 1, 1, 4, -4, -1, 1, 1, 1}, // key 00
+    {2, 1, 1, 1, 1, 1, 4, -4, -1, 1, 1, 1},
+    {2, 1, 1, 1, 1, 2, 4, -4, -1, 1, 1, 0},
+    {2, 1, 1, 1, 2, 2, 4, -4, -1, 0, 1, 0},
+    {2, 1, 1, 1, 2, 2, 4, -4, -1, 0, 1, 0},
+    {2, 1, 1, 2, 2, 2, 4, -4, -1, 0, 1, 0},
+    {2, 1, 1, 2, 2, 2, 4, -4, -1, 0, 1, 0},
+    {2, 1, 2, 2, 2, 2, 4, -4, -1, 0, 1, 0},
+    {2, 1, 2, 2, 2, 2, 4, -4, -1, 0, 1, 0}, // key 08
+    {2, 1, 2, 2, 2, 2, 4, -4, -1, 0, 1, 0},
+    {1, 1, 2, 2, 2, 2, 4, -4, -1, 0, 1, 0},
+    {1, 1, 2, 2, 2, 2, 3, -3, -1, 0, 1, 0},
+    {0, 1, 2, 2, 2, 2, 3, -3, -1, 0, 0, 0},
+    {0, 1, 2, 2, 2, 2, 3, -3, -1, 0, 0, 0},
+    {-1, 1, 2, 2, 2, 2, 3, -3, -1, 0, 0, 0},
+    {-1, 1, 2, 2, 2, 2, 3, -3, -1, 0, -1, 0},
+    {-1, 1, 2, 2, 2, 1, 2, -2, -1, 0, -1, 0}, // key 16
+    {-2, 1, 2, 2, 2, 1, 2, -2, -1, 0, -1, 0},
+    {-2, 1, 2, 2, 1, 1, 2, -2, -1, 0, -1, 0},
+    {-2, 1, 2, 1, 1, 1, 2, -2, -1, 0, -1, 1},
+    {-2, 1, 2, 1, 1, 1, 2, -2, -1, 0, -1, 1},
+    {-2, 1, 1, 1, 1, 1, 2, -2, -1, 0, -1, 0},
+    {-2, 1, 1, 1, 1, 0, 2, -2, -1, 0, -1, 0},
+    {-2, 1, 1, 1, 1, 0, 2, -2, -1, 0, -1, 0},
+    {-2, 1, 1, 1, 0, 0, 2, -2, -1, 0, -1, 0}, // key 24
+    {-2, 1, 1, 1, 0, 0, 2, -2, -1, 0, -1, 0},
+    {-1, 0, 1, 1, 0, 0, 2, -2, -2, 0, -1, 0},
+    {-1, 0, 1, 1, 0, 0, 3, -3, -2, 0, -1, 0},
+    {0, 0, 1, 1, 0, -1, 3, -3, -2, 0, 0, 0},
+    {0, 0, 1, 1, -1, -1, 3, -3, -2, 0, 0, 0},
+    {1, 0, 1, 1, -1, -1, 3, -3, -2, 0, 0, 0},
+    {1, 0, 1, 0, -1, -1, 3, -3, -2, 0, 1, 0},
+    {1, 0, 1, 0, -1, -1, 4, -4, -2, 0, 1, 0}, // key 32
+    {2, 0, 0, 0, -1, -1, 4, -4, -2, 0, 1, 0},
+    {2, 0, 0, 0, -1, -2, 4, -4, -2, 0, 1, 0},
+    {2, 0, 0, 0, -2, -2, 4, -4, -2, 0, 1, 0},
+    {2, 0, 0, 0, -2, -2, 4, -4, -2, 0, 1, 0},
+    {2, 0, 0, 0, -2, -2, 4, -4, -2, 0, 1, 0},
+    {2, 0, 0, 0, -2, -2, 4, -4, -2, 0, 1, 1},
+    {2, -1, 0, -1, -2, -2, 4, -4, -2, 0, 1, 1},
+    {2, -1, 0, -1, -2, -2, 4, -4, -2, 1, 1, 0}, // key 40
+    {2, -1, 0, -1, -2, -2, 4, -4, -2, 1, 1, 0},
+    {1, -1, -1, -1, -2, -2, 4, -4, -2, 1, 1, 0},
+    {1, -1, -1, -1, -2, -2, 3, -3, -2, 0, 1, 0},
+    {0, -1, -1, -1, -2, -2, 3, -3, -2, 0, 0, 0},
+    {0, -1, -1, -1, -2, -2, 3, -3, -2, 0, 0, 0},
+    {-1, -1, -1, -1, -2, -2, 3, -3, -2, 0, 0, 0},
+    {-1, -1, -1, -1, -2, -2, 3, -3, -2, 0, -1, 0},
+    {-1, -1, -1, -1, -2, -1, 2, -2, -2, 0, -1, 0}, // key 48
+    {-2, -1, -1, -1, -2, -1, 2, -2, -2, 0, -1, 0},
+    {-2, -1, -1, -1, -1, -1, 2, -2, -2, 0, -1, 0},
+    {-2, -1, -1, -2, -1, -1, 2, -2, -2, 0, -1, 0},
+    {-2, -1, -1, -2, -1, -1, 2, -2, -2, 0, -1, 0},
+    {-2, -1, -2, -2, -1, -1, 2, -2, -2, 0, -1, 0},
+    {-2, -1, -2, -2, -1, 0, 2, -2, -2, 0, -1, 0},
+    {-2, -1, -2, -2, -1, 0, 2, -2, -2, 0, -1, 0},
+    {-2, -1, -2, -2, 0, 0, 2, -2, -2, 0, -1, 0}, // key 56
+    {-2, -1, -2, -2, 0, 0, 2, -2, -2, 0, -1, 1},
+    {-1, -1, -2, -2, 0, 0, 2, -2, -1, 0, -1, 1},
+    {-1, -1, -2, -2, 0, 0, 3, -3, -1, 0, -1, 0},
+    {0, -1, -2, -2, 0, 1, 3, -3, -1, 0, 0, 0},
+    {0, -1, -2, -2, 1, 1, 3, -3, -1, 0, 0, 0},
+    {1, -1, -2, -2, 1, 1, 3, -3, -1, 0, 0, 0},
+    {1, -1, -2, -2, 1, 1, 3, -3, -1, 0, 1, 0},
+  },
+  { // 47: ANGRY_SHAKE
+    {2, 1, 1, 1, 2, 2, 4, -4, -1, 1, 1, 1}, // key 00
+    {2, 1, 1, 2, 2, 2, 4, -4, -1, 1, 1, 1},
+    {2, 1, 1, 2, 2, 2, 4, -4, -1, 1, 1, 0},
+    {2, 1, 2, 2, 2, 2, 4, -4, -1, 0, 1, 0},
+    {2, 1, 2, 2, 2, 2, 4, -4, -1, 0, 1, 0},
+    {2, 1, 2, 2, 2, 2, 4, -4, -1, 0, 1, 0},
+    {2, 1, 2, 2, 2, 2, 4, -4, -1, 0, 1, 0},
+    {1, 1, 2, 2, 2, 2, 4, -4, -1, 0, 1, 0},
+    {1, 1, 2, 2, 2, 2, 3, -3, -1, 0, 0, 0}, // key 08
+    {0, 1, 2, 2, 2, 2, 3, -3, -1, 0, 0, 0},
+    {-1, 1, 2, 2, 2, 2, 3, -3, -1, 0, 0, 0},
+    {-1, 1, 2, 2, 2, 2, 2, -2, -1, 0, -1, 0},
+    {-2, 1, 2, 2, 2, 2, 2, -2, -1, 0, -1, 0},
+    {-2, 1, 2, 2, 2, 1, 2, -2, -1, 0, -1, 0},
+    {-2, 1, 2, 2, 1, 1, 2, -2, -1, 0, -1, 0},
+    {-2, 1, 2, 1, 1, 1, 2, -2, -1, 0, -1, 0},
+    {-2, 1, 2, 1, 1, 1, 2, -2, -1, 0, -1, 0}, // key 16
+    {-2, 1, 1, 1, 1, 1, 2, -2, -1, 0, -1, 0},
+    {-2, 1, 1, 1, 1, 1, 2, -2, -1, 0, -1, 0},
+    {-2, 1, 1, 1, 1, 0, 2, -2, -1, 0, -1, 1},
+    {-1, 1, 1, 1, 0, 0, 2, -2, -1, 0, -1, 1},
+    {0, 1, 1, 1, 0, 0, 3, -3, -1, 0, 0, 0},
+    {0, 0, 1, 1, 0, 0, 3, -3, -1, 0, 0, 0},
+    {1, 0, 1, 1, 0, 0, 3, -3, -2, 0, 0, 0},
+    {1, 0, 1, 1, 0, -1, 4, -4, -2, 0, 1, 0}, // key 24
+    {2, 0, 1, 1, 0, -1, 4, -4, -2, 0, 1, 0},
+    {2, 0, 1, 0, -1, -1, 4, -4, -2, 0, 1, 0},
+    {2, 0, 1, 0, -1, -1, 4, -4, -2, 0, 1, 0},
+    {2, 0, 0, 0, -1, -1, 4, -4, -2, 0, 1, 0},
+    {2, 0, 0, 0, -1, -1, 4, -4, -2, 0, 1, 0},
+    {2, 0, 0, 0, -1, -2, 4, -4, -2, 0, 1, 0},
+    {2, 0, 0, 0, -1, -2, 4, -4, -2, 0, 1, 0},
+    {1, 0, 0, 0, -2, -2, 4, -4, -2, 0, 1, 0}, // key 32
+    {1, 0, 0, 0, -2, -2, 3, -3, -2, 0, 1, 0},
+    {0, 0, 0, 0, -2, -2, 3, -3, -2, 0, 0, 0},
+    {0, -1, 0, -1, -2, -2, 3, -3, -2, 0, 0, 0},
+    {-1, -1, 0, -1, -2, -2, 3, -3, -2, 0, -1, 0},
+    {-1, -1, -1, -1, -2, -2, 2, -2, -2, 0, -1, 0},
+    {-2, -1, -1, -1, -2, -2, 2, -2, -2, 0, -1, 1},
+    {-2, -1, -1, -1, -2, -2, 2, -2, -2, 0, -1, 1},
+    {-2, -1, -1, -1, -2, -2, 2, -2, -2, 1, -1, 0}, // key 40
+    {-2, -1, -1, -1, -2, -2, 2, -2, -2, 1, -1, 0},
+    {-2, -1, -1, -1, -2, -2, 2, -2, -2, 1, -1, 0},
+    {-2, -1, -1, -1, -2, -2, 2, -2, -2, 0, -1, 0},
+    {-2, -1, -1, -1, -2, -2, 2, -2, -2, 0, -1, 0},
+    {-1, -1, -1, -1, -2, -1, 2, -2, -2, 0, -1, 0},
+    {-1, -1, -1, -2, -1, -1, 3, -3, -2, 0, -1, 0},
+    {0, -1, -1, -2, -1, -1, 3, -3, -2, 0, 0, 0},
+    {0, -1, -2, -2, -1, -1, 3, -3, -2, 0, 0, 0}, // key 48
+    {1, -1, -2, -2, -1, -1, 3, -3, -2, 0, 1, 0},
+    {1, -1, -2, -2, -1, -1, 4, -4, -2, 0, 1, 0},
+    {2, -1, -2, -2, -1, 0, 4, -4, -2, 0, 1, 0},
+    {2, -1, -2, -2, 0, 0, 4, -4, -2, 0, 1, 0},
+    {2, -1, -2, -2, 0, 0, 4, -4, -2, 0, 1, 0},
+    {2, -1, -2, -2, 0, 0, 4, -4, -2, 0, 1, 0},
+    {2, -1, -2, -2, 0, 0, 4, -4, -1, 0, 1, 0},
+    {2, -1, -2, -2, 0, 1, 4, -4, -1, 0, 1, 0}, // key 56
+    {2, -1, -2, -2, 0, 1, 4, -4, -1, 0, 1, 1},
+    {1, -1, -2, -2, 1, 1, 4, -4, -1, 0, 1, 1},
+    {1, -1, -2, -2, 1, 1, 3, -3, -1, 0, 0, 0},
+    {0, -1, -2, -1, 1, 1, 3, -3, -1, 0, 0, 0},
+    {0, -1, -2, -1, 1, 1, 3, -3, -1, 0, 0, 0},
+    {-1, 0, -2, -1, 1, 2, 2, -2, -1, 0, -1, 0},
+    {-2, 0, -1, -1, 1, 2, 2, -2, -1, 0, -1, 0},
+  },
+  { // 48: ANGRY_GLARE
+    {2, 1, 2, 2, 2, 2, 4, -4, -1, 1, 1, 1}, // key 00
+    {2, 1, 2, 2, 2, 2, 4, -4, -1, 1, 1, 1},
+    {2, 1, 2, 2, 2, 2, 4, -4, -1, 1, 1, 0},
+    {2, 1, 2, 2, 2, 2, 4, -4, -1, 0, 1, 0},
+    {2, 1, 2, 2, 2, 2, 4, -4, -1, 0, 1, 0},
+    {2, 1, 2, 2, 2, 2, 4, -4, -1, 0, 1, 0},
+    {2, 1, 2, 2, 2, 2, 4, -4, -1, 0, 1, 0},
+    {1, 1, 2, 2, 2, 2, 4, -4, -1, 0, 1, 0},
+    {1, 1, 2, 2, 2, 2, 3, -3, -1, 0, 0, 0}, // key 08
+    {0, 1, 2, 2, 2, 2, 3, -3, -1, 0, 0, 0},
+    {0, 1, 2, 1, 2, 1, 3, -3, -1, 0, 0, 0},
+    {-1, 1, 2, 1, 1, 1, 3, -3, -1, 0, 0, 0},
+    {-1, 1, 1, 1, 1, 1, 2, -2, -1, 0, -1, 0},
+    {-2, 1, 1, 1, 1, 1, 2, -2, -1, 0, -1, 0},
+    {-2, 1, 1, 1, 1, 1, 2, -2, -1, 0, -1, 0},
+    {-2, 1, 1, 1, 1, 1, 2, -2, -1, 0, -1, 0},
+    {-2, 1, 1, 1, 1, 0, 2, -2, -1, 0, -1, 0}, // key 16
+    {-2, 1, 1, 1, 0, 0, 2, -2, -1, 0, -1, 0},
+    {-2, 0, 1, 1, 0, 0, 2, -2, -1, 0, -1, 0},
+    {-2, 0, 1, 1, 0, 0, 2, -2, -1, 0, -1, 1},
+    {-2, 0, 1, 1, 0, 0, 2, -2, -2, 0, -1, 1},
+    {-2, 0, 1, 1, 0, -1, 2, -2, -2, 0, -1, 0},
+    {-2, 0, 1, 0, -1, -1, 2, -2, -2, 0, -1, 0},
+    {-1, 0, 1, 0, -1, -1, 2, -2, -2, 0, -1, 0},
+    {-1, 0, 0, 0, -1, -1, 3, -3, -2, 0, 0, 0}, // key 24
+    {0, 0, 0, 0, -1, -1, 3, -3, -2, 0, 0, 0},
+    {0, 0, 0, 0, -1, -1, 3, -3, -2, 0, 0, 0},
+    {1, 0, 0, 0, -1, -2, 3, -3, -2, 0, 0, 0},
+    {1, 0, 0, 0, -1, -2, 4, -4, -2, 0, 1, 0},
+    {2, 0, 0, 0, -2, -2, 4, -4, -2, 0, 1, 0},
+    {2, 0, 0, -1, -2, -2, 4, -4, -2, 0, 1, 0},
+    {2, -1, 0, -1, -2, -2, 4, -4, -2, 0, 1, 0},
+    {2, -1, 0, -1, -2, -2, 4, -4, -2, 0, 1, 0}, // key 32
+    {2, -1, -1, -1, -2, -2, 4, -4, -2, 0, 1, 0},
+    {2, -1, -1, -1, -2, -2, 4, -4, -2, 0, 1, 0},
+    {2, -1, -1, -1, -2, -2, 4, -4, -2, 0, 1, 0},
+    {2, -1, -1, -1, -2, -2, 4, -4, -2, 0, 1, 0},
+    {2, -1, -1, -1, -2, -2, 4, -4, -2, 0, 1, 0},
+    {2, -1, -1, -1, -2, -2, 4, -4, -2, 0, 1, 1},
+    {1, -1, -1, -1, -2, -2, 4, -4, -2, 0, 1, 1},
+    {1, -1, -1, -1, -2, -2, 3, -3, -2, 1, 0, 0}, // key 40
+    {0, -1, -1, -1, -2, -2, 3, -3, -2, 1, 0, 0},
+    {0, -1, -1, -2, -2, -1, 3, -3, -2, 1, 0, 0},
+    {-1, -1, -1, -2, -1, -1, 3, -3, -2, 0, 0, 0},
+    {-1, -1, -2, -2, -1, -1, 2, -2, -2, 0, -1, 0},
+    {-2, -1, -2, -2, -1, -1, 2, -2, -2, 0, -1, 0},
+    {-2, -1, -2, -2, -1, -1, 2, -2, -2, 0, -1, 0},
+    {-2, -1, -2, -2, -1, -1, 2, -2, -2, 0, -1, 0},
+    {-2, -1, -2, -2, -1, 0, 2, -2, -2, 0, -1, 0}, // key 48
+    {-2, -1, -2, -2, 0, 0, 2, -2, -2, 0, -1, 0},
+    {-2, -1, -2, -2, 0, 0, 2, -2, -2, 0, -1, 0},
+    {-2, -1, -2, -2, 0, 0, 2, -2, -2, 0, -1, 0},
+    {-2, -1, -2, -2, 0, 0, 2, -2, -1, 0, -1, 0},
+    {-2, -1, -2, -2, 0, 1, 2, -2, -1, 0, -1, 0},
+    {-2, -1, -2, -2, 1, 1, 2, -2, -1, 0, -1, 0},
+    {-1, -1, -2, -2, 1, 1, 2, -2, -1, 0, -1, 0},
+    {-1, -1, -2, -1, 1, 1, 3, -3, -1, 0, 0, 0}, // key 56
+    {0, -1, -2, -1, 1, 1, 3, -3, -1, 0, 0, 1},
+    {0, 0, -1, -1, 1, 1, 3, -3, -1, 0, 0, 1},
+    {1, 0, -1, -1, 1, 2, 3, -3, -1, 0, 0, 0},
+    {1, 0, -1, -1, 1, 2, 4, -4, -1, 0, 1, 0},
+    {2, 0, -1, -1, 2, 2, 4, -4, -1, 0, 1, 0},
+    {2, 0, -1, -1, 2, 2, 4, -4, -1, 0, 1, 0},
+    {2, 0, -1, -1, 2, 2, 4, -4, -1, 0, 1, 0},
+  },
+  { // 49: ANGRY_SETTLE
+    {2, 1, 2, 2, 2, 2, 4, -4, -1, 1, 1, 1}, // key 00
+    {2, 1, 2, 2, 2, 2, 4, -4, -1, 1, 1, 1},
+    {2, 1, 2, 2, 2, 2, 4, -4, -1, 1, 1, 0},
+    {2, 1, 2, 2, 2, 2, 4, -4, -1, 0, 1, 0},
+    {1, 1, 2, 2, 2, 2, 4, -4, -1, 0, 1, 0},
+    {1, 1, 2, 2, 2, 2, 3, -3, -1, 0, 1, 0},
+    {0, 1, 2, 1, 2, 2, 3, -3, -1, 0, 0, 0},
+    {0, 1, 2, 1, 2, 1, 3, -3, -1, 0, 0, 0},
+    {-1, 1, 1, 1, 1, 1, 3, -3, -1, 0, -1, 0}, // key 08
+    {-1, 1, 1, 1, 1, 1, 2, -2, -1, 0, -1, 0},
+    {-2, 1, 1, 1, 1, 1, 2, -2, -1, 0, -1, 0},
+    {-2, 1, 1, 1, 1, 1, 2, -2, -1, 0, -1, 0},
+    {-2, 1, 1, 1, 1, 1, 2, -2, -1, 0, -1, 0},
+    {-2, 1, 1, 1, 1, 0, 2, -2, -1, 0, -1, 0},
+    {-2, 0, 1, 1, 0, 0, 2, -2, -1, 0, -1, 0},
+    {-2, 0, 1, 1, 0, 0, 2, -2, -1, 0, -1, 0},
+    {-2, 0, 1, 1, 0, 0, 2, -2, -1, 0, -1, 0}, // key 16
+    {-1, 0, 1, 0, 0, 0, 2, -2, -2, 0, -1, 0},
+    {-1, 0, 1, 0, 0, -1, 3, -3, -2, 0, 0, 0},
+    {0, 0, 0, 0, -1, -1, 3, -3, -2, 0, 0, 1},
+    {0, 0, 0, 0, -1, -1, 3, -3, -2, 0, 0, 1},
+    {1, 0, 0, 0, -1, -1, 3, -3, -2, 0, 1, 0},
+    {2, 0, 0, 0, -1, -1, 4, -4, -2, 0, 1, 0},
+    {2, 0, 0, 0, -1, -1, 4, -4, -2, 0, 1, 0},
+    {2, 0, 0, 0, -1, -2, 4, -4, -2, 0, 1, 0}, // key 24
+    {2, 0, 0, 0, -2, -2, 4, -4, -2, 0, 1, 0},
+    {2, 0, 0, -1, -2, -2, 4, -4, -2, 0, 1, 0},
+    {2, -1, 0, -1, -2, -2, 4, -4, -2, 0, 1, 0},
+    {2, -1, -1, -1, -2, -2, 4, -4, -2, 0, 1, 0},
+    {2, -1, -1, -1, -2, -2, 4, -4, -2, 0, 1, 0},
+    {1, -1, -1, -1, -2, -2, 4, -4, -2, 0, 1, 0},
+    {1, -1, -1, -1, -2, -2, 3, -3, -2, 0, 0, 0},
+    {0, -1, -1, -1, -2, -2, 3, -3, -2, 0, 0, 0}, // key 32
+    {-1, -1, -1, -1, -2, -2, 3, -3, -2, 0, 0, 0},
+    {-1, -1, -1, -1, -2, -2, 2, -2, -2, 0, -1, 0},
+    {-2, -1, -1, -1, -2, -2, 2, -2, -2, 0, -1, 0},
+    {-2, -1, -1, -1, -2, -2, 2, -2, -2, 0, -1, 0},
+    {-2, -1, -1, -2, -2, -2, 2, -2, -2, 0, -1, 0},
+    {-2, -1, -1, -2, -2, -2, 2, -2, -2, 0, -1, 1},
+    {-2, -1, -2, -2, -2, -1, 2, -2, -2, 0, -1, 1},
+    {-2, -1, -2, -2, -1, -1, 2, -2, -2, 1, -1, 0}, // key 40
+    {-2, -1, -2, -2, -1, -1, 2, -2, -2, 1, -1, 0},
+    {-2, -1, -2, -2, -1, -1, 2, -2, -2, 1, -1, 0},
+    {-1, -1, -2, -2, -1, -1, 2, -2, -2, 0, -1, 0},
+    {-1, -1, -2, -2, -1, -1, 3, -3, -2, 0, 0, 0},
+    {0, -1, -2, -2, -1, 0, 3, -3, -2, 0, 0, 0},
+    {1, -1, -2, -2, 0, 0, 3, -3, -2, 0, 0, 0},
+    {1, -1, -2, -2, 0, 0, 4, -4, -2, 0, 1, 0},
+    {2, -1, -2, -2, 0, 0, 4, -4, -2, 0, 1, 0}, // key 48
+    {2, -1, -2, -2, 0, 0, 4, -4, -1, 0, 1, 0},
+    {2, -1, -2, -2, 0, 1, 4, -4, -1, 0, 1, 0},
+    {2, -1, -2, -1, 1, 1, 4, -4, -1, 0, 1, 0},
+    {2, -1, -2, -1, 1, 1, 4, -4, -1, 0, 1, 0},
+    {2, -1, -2, -1, 1, 1, 4, -4, -1, 0, 1, 0},
+    {2, 0, -1, -1, 1, 1, 4, -4, -1, 0, 1, 0},
+    {2, 0, -1, -1, 1, 1, 4, -4, -1, 0, 1, 0},
+    {1, 0, -1, -1, 1, 2, 3, -3, -1, 0, 1, 0}, // key 56
+    {0, 0, -1, -1, 2, 2, 3, -3, -1, 0, 0, 1},
+    {0, 0, -1, -1, 2, 2, 3, -3, -1, 0, 0, 1},
+    {-1, 0, -1, -1, 2, 2, 3, -3, -1, 0, 0, 0},
+    {-1, 0, -1, -1, 2, 2, 2, -2, -1, 0, -1, 0},
+    {-2, 0, -1, -1, 2, 2, 2, -2, -1, 0, -1, 0},
+    {-2, 0, -1, -1, 2, 2, 2, -2, -1, 0, -1, 0},
+    {-2, 0, -1, 0, 2, 2, 2, -2, -1, 0, -1, 0},
+  },
+  { // 50: SASSY_SIDE_EYE
+    {2, 1, 1, -1, 2, 0, 3, 0, 3, 1, 1, 1}, // key 00
+    {2, 1, 1, -1, 2, 0, 3, 0, 3, 1, 1, 0},
+    {2, 1, 1, -1, 2, 0, 3, 0, 3, 1, 1, 0},
+    {2, 1, 1, -1, 2, 0, 3, 0, 3, 1, 1, 0},
+    {2, 1, 1, -1, 2, 0, 3, 0, 3, 1, 1, 0},
+    {2, 1, 1, -1, 2, 0, 3, 0, 3, 1, 1, 0},
+    {1, 1, 1, -1, 2, 0, 2, 0, 3, 1, 1, 0},
+    {1, 1, 1, -1, 2, -1, 2, 0, 3, 1, 1, 0},
+    {1, 1, 1, -1, 2, -1, 2, 0, 3, 1, 1, 0}, // key 08
+    {1, 1, 1, -1, 2, -1, 2, 0, 3, 1, 1, 0},
+    {1, 1, 1, -1, 2, -1, 2, 0, 3, 0, 1, 0},
+    {1, 1, 1, -1, 2, -1, 2, 0, 3, 0, 0, 0},
+    {1, 0, 1, 0, 2, -1, 2, 0, 2, 0, 0, 0},
+    {1, 0, 0, 0, 2, -1, 2, -1, 2, 0, 0, 0},
+    {0, 0, 0, 0, 1, -1, 1, -1, 2, 0, 0, 0},
+    {0, 0, 0, 0, -1, -1, 1, -1, 2, 0, 0, 0},
+    {0, 0, 0, 0, -4, -1, 1, -1, 2, 0, 0, 0}, // key 16
+    {0, 0, 0, 0, -4, -1, 1, -1, 2, 0, 0, 0},
+    {0, 0, 0, 0, -4, -2, 1, -1, 2, 0, 0, 0},
+    {0, 0, 0, 0, -1, -2, 1, -1, 2, 0, 0, 0},
+    {0, 0, 0, 0, 1, -2, 1, -1, 2, 0, 0, 0},
+    {-1, 0, 0, 0, 1, -2, 0, -1, 2, 0, 0, 0},
+    {-1, 0, 0, 0, 1, -2, 0, -1, 2, 0, 0, 0},
+    {-1, 0, -1, 0, 1, -2, 0, -2, 2, 0, 0, 0},
+    {-1, 0, -1, 1, 1, -2, 0, -2, 1, 0, -1, 0}, // key 24
+    {-1, 0, -1, 1, 1, -2, 0, -2, 1, 0, -1, 0},
+    {-1, -1, -1, 1, 1, -2, 0, -2, 1, 0, -1, 0},
+    {-1, -1, -1, 1, 1, -2, 0, -2, 1, 0, -1, 0},
+    {-1, -1, -1, 1, 1, -2, 0, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0}, // key 32
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 1},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 1},
+    {-2, -1, -1, 1, 1, -1, -1, -2, 1, 0, -1, 1},
+    {-2, -1, -1, 1, 1, -1, -1, -2, 1, 0, -1, 1}, // key 40
+    {-2, -1, -1, 1, 1, -1, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -1, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -1, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -1, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -1, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 2, -1, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 2, -1, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 2, -1, -1, -2, 1, 0, -1, 0}, // key 48
+    {-1, -1, -1, 1, 2, -1, 0, -2, 1, 1, -1, 0},
+    {-1, -1, -1, 1, 2, 0, 0, -2, 1, 1, -1, 0},
+    {-1, -1, -1, 1, 2, 0, 0, -2, 1, 1, -1, 0},
+    {-1, -1, -1, 1, 2, 0, 0, -2, 1, 1, -1, 0},
+    {-1, -1, -1, 1, 2, 0, 0, -2, 1, 1, -1, 0},
+    {-1, -1, -1, 1, 2, 0, 0, -2, 1, 1, 0, 0},
+    {-1, -1, -1, 0, 2, 0, 0, -2, 2, 1, 0, 0},
+    {-1, -1, 0, 0, 2, 0, 0, -1, 2, 1, 0, 0}, // key 56
+    {0, -1, 0, 0, 2, 0, 1, -1, 2, 1, 0, 0},
+    {0, 0, 0, 0, 2, 0, 1, -1, 2, 1, 0, 0},
+    {0, 0, 0, 0, 2, 0, 1, -1, 2, 1, 0, 0},
+    {0, 0, 0, 0, 2, 0, 1, -1, 2, 1, 0, 0},
+    {0, 0, 0, 0, 2, 0, 1, -1, 2, 1, 0, 0},
+    {0, 0, 0, 0, 2, 0, 1, -1, 2, 1, 0, 0},
+    {0, 0, 0, 0, 2, 0, 1, -1, 2, 1, 0, 0},
+  },
+  { // 51: SASSY_WINK
+    {2, 1, 1, -1, 2, 0, 3, 0, 3, 1, 1, 0}, // key 00
+    {2, 1, 1, -1, 2, 0, 3, 0, 3, 1, 1, 0},
+    {1, 1, 1, -1, 2, 0, 2, 0, 3, 1, 1, 0},
+    {1, 1, 1, -1, 2, 0, 2, 0, 3, 1, 1, 0},
+    {1, 1, 1, -1, 2, -1, 2, 0, 3, 1, 1, 0},
+    {1, 1, 1, -1, 2, -1, 2, 0, 3, 1, 1, 0},
+    {1, 1, 1, -1, 2, -1, 2, 0, 3, 1, 1, 0},
+    {1, 1, 1, -1, 2, -1, 2, 0, 3, 0, 0, 0},
+    {1, 0, 1, 0, 2, -1, 2, 0, 2, 0, 0, 0}, // key 08
+    {1, 0, 0, 0, 2, -1, 2, -1, 2, 0, 0, 0},
+    {0, 0, 0, 0, 1, -1, 1, -1, 2, 0, 0, 0},
+    {0, 0, 0, 0, 1, -1, 1, -1, 2, 0, 0, 0},
+    {0, 0, 0, 0, 1, -1, 1, -1, 2, 0, 0, 0},
+    {0, 0, 0, 0, 1, -1, 1, -1, 2, 0, 0, 0},
+    {0, 0, 0, 0, 1, -1, 1, -1, 2, 0, 0, 0},
+    {0, 0, 0, 0, 1, -2, 1, -1, 2, 0, 0, 0},
+    {0, 0, 0, 0, 1, -2, 1, -1, 2, 0, 0, 0}, // key 16
+    {-1, 0, 0, 0, 1, -2, 0, -1, 2, 0, 0, 0},
+    {-1, 0, 0, 0, 1, -2, 0, -2, 2, 0, 0, 0},
+    {-1, 0, -1, 0, 1, -2, 0, -2, 2, 0, 0, 0},
+    {-1, 0, -1, 1, 1, -4, 0, -2, 1, 0, -1, 0},
+    {-1, 0, -1, 1, 1, -7, 0, -2, 1, 0, -1, 0},
+    {-1, -1, -1, 1, 1, -7, 0, -2, 1, 0, -1, 0},
+    {-1, -1, -1, 1, 1, -7, 0, -2, 1, 0, -1, 0},
+    {-1, -1, -1, 1, 1, -4, 0, -2, 1, 0, -1, 0}, // key 24
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0}, // key 32
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 1},
+    {-2, -1, -1, 1, 1, -1, -1, -2, 1, 0, -1, 1},
+    {-2, -1, -1, 1, 1, -1, -1, -2, 1, 0, -1, 1},
+    {-2, -1, -1, 1, 1, -1, -1, -2, 1, 0, -1, 1},
+    {-2, -1, -1, 1, 1, -1, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -1, -1, -2, 1, 0, -1, 0}, // key 40
+    {-2, -1, -1, 1, 1, -1, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 2, -1, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 2, -1, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 2, -1, -1, -2, 1, 0, -1, 0},
+    {-1, -1, -1, 1, 2, -1, 0, -2, 1, 0, -1, 0},
+    {-1, -1, -1, 1, 2, -1, 0, -2, 1, 1, -1, 0},
+    {-1, -1, -1, 1, 2, 0, 0, -2, 1, 1, -1, 0},
+    {-1, -1, -1, 1, 2, 0, 0, -2, 1, 1, -1, 0}, // key 48
+    {-1, -1, -1, 1, 2, 0, 0, -2, 1, 1, -1, 0},
+    {-1, -1, -1, 1, 2, 0, 0, -2, 1, 1, 0, 0},
+    {-1, -1, 0, 0, 2, 0, 0, -2, 2, 1, 0, 0},
+    {-1, -1, 0, 0, 2, 0, 0, -1, 2, 1, 0, 0},
+    {0, 0, 0, 0, 2, 0, 1, -1, 2, 1, 0, 0},
+    {0, 0, 0, 0, 2, 0, 1, -1, 2, 1, 0, 0},
+    {0, 0, 0, 0, 2, 0, 1, -1, 2, 1, 0, 0},
+    {0, 0, 0, 0, 2, 0, 1, -1, 2, 1, 0, 0}, // key 56
+    {0, 0, 0, 0, 2, 0, 1, -1, 2, 1, 0, 0},
+    {0, 0, 0, 0, 2, 0, 1, -1, 2, 1, 0, 0},
+    {0, 0, 0, 0, 2, 0, 1, -1, 2, 1, 0, 0},
+    {1, 0, 0, 0, 2, 0, 2, -1, 2, 1, 0, 0},
+    {1, 0, 1, 0, 2, 0, 2, 0, 2, 1, 0, 0},
+    {1, 0, 1, -1, 2, 0, 2, 0, 3, 1, 0, 0},
+    {1, 0, 1, -1, 2, 0, 2, 0, 3, 1, 1, 0},
+  },
+  { // 52: SASSY_SMIRK
+    {1, 1, 1, -1, 2, 0, 2, 0, 3, 1, 1, 0}, // key 00
+    {1, 1, 1, -1, 2, -1, 2, 0, 3, 1, 1, 0},
+    {1, 1, 1, -1, 2, -1, 2, 0, 3, 1, 1, 0},
+    {1, 0, 1, -1, 2, -1, 2, 0, 3, 1, 0, 0},
+    {1, 0, 1, 0, 2, -1, 2, 0, 2, 0, 0, 0},
+    {1, 0, 0, 0, 2, -1, 2, -1, 2, 0, 0, 0},
+    {0, 0, 0, 0, 2, -1, 1, -1, 2, 0, 0, 0},
+    {0, 0, 0, 0, 1, -1, 1, -1, 2, 0, 0, 0},
+    {0, 0, 0, 0, 1, -1, 1, -1, 2, 0, 0, 0}, // key 08
+    {0, 0, 0, 0, 1, -1, 1, -1, 2, 0, 0, 0},
+    {0, 0, 0, 0, 1, -1, 1, -1, 2, 0, 0, 0},
+    {0, 0, 0, 0, 1, -1, 1, -1, 2, 0, 0, 0},
+    {0, 0, 0, 0, 1, -2, 1, -1, 2, 0, 0, 0},
+    {-1, 0, 0, 0, 1, -2, 0, -1, 2, 0, 0, 0},
+    {-1, 0, -1, 0, 1, -2, 0, -2, 2, 0, 0, 0},
+    {-1, 0, -1, 1, 1, -2, 0, -2, 1, 0, 0, 0},
+    {-1, 0, -1, 1, 1, -2, 0, -2, 1, 0, -1, 0}, // key 16
+    {-1, -1, -1, 1, 1, -2, 0, -2, 1, 0, -1, 0},
+    {-1, -1, -1, 1, 1, -2, 0, -2, 1, 0, -1, 0},
+    {-1, -1, -1, 1, 1, -2, 0, -2, 1, 0, -1, 0},
+    {-1, -1, -1, 1, 1, -2, 0, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0}, // key 24
+    {-2, -1, -1, 1, -1, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, -4, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, -4, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, -4, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, -1, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0}, // key 32
+    {-2, -1, -1, 1, 1, -1, -1, -2, 1, 0, -1, 1},
+    {-2, -1, -1, 1, 1, -1, -1, -2, 1, 0, -1, 1},
+    {-2, -1, -1, 1, 1, -1, -1, -2, 1, 0, -1, 1},
+    {-2, -1, -1, 1, 1, -1, -1, -2, 1, 0, -1, 1},
+    {-2, -1, -1, 1, 1, -1, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -1, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 2, -1, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 2, -1, -1, -2, 1, 0, -1, 0}, // key 40
+    {-1, -1, -1, 1, 2, -1, 0, -2, 1, 0, -1, 0},
+    {-1, -1, -1, 1, 2, -1, 0, -2, 1, 0, -1, 0},
+    {-1, -1, -1, 1, 2, -1, 0, -2, 1, 1, -1, 0},
+    {-1, -1, -1, 1, 2, 0, 0, -2, 1, 1, -1, 0},
+    {-1, -1, -1, 1, 2, 0, 0, -2, 1, 1, -1, 0},
+    {-1, -1, -1, 0, 2, 0, 0, -2, 2, 1, 0, 0},
+    {-1, -1, 0, 0, 2, 0, 0, -2, 2, 1, 0, 0},
+    {-1, -1, 0, 0, 2, 0, 0, -1, 2, 1, 0, 0}, // key 48
+    {0, 0, 0, 0, 2, 0, 1, -1, 2, 1, 0, 0},
+    {0, 0, 0, 0, 2, 0, 1, -1, 2, 1, 0, 0},
+    {0, 0, 0, 0, 2, 0, 1, -1, 2, 1, 0, 0},
+    {0, 0, 0, 0, 2, 0, 1, -1, 2, 1, 0, 0},
+    {0, 0, 0, 0, 2, 0, 1, -1, 2, 1, 0, 0},
+    {0, 0, 0, 0, 2, 0, 1, -1, 2, 1, 0, 0},
+    {0, 0, 0, 0, 2, 0, 1, -1, 2, 1, 0, 0},
+    {1, 0, 0, 0, 2, 0, 2, -1, 2, 1, 0, 0}, // key 56
+    {1, 0, 1, 0, 2, 0, 2, 0, 2, 1, 0, 0},
+    {1, 0, 1, -1, 2, 0, 2, 0, 3, 1, 0, 0},
+    {1, 0, 1, -1, 2, 0, 2, 0, 3, 1, 1, 0},
+    {1, 0, 1, -1, 2, 0, 2, 0, 3, 1, 1, 0},
+    {1, 0, 1, -1, 2, 0, 2, 0, 3, 1, 1, 0},
+    {1, 0, 1, -1, 2, 0, 2, 0, 3, 1, 1, 0},
+    {1, 1, 1, -1, 2, 0, 2, 0, 3, 1, 1, 0},
+  },
+  { // 53: SASSY_SHAKE
+    {1, 0, 0, 0, 2, -1, 2, 0, 2, 0, 0, 0}, // key 00
+    {1, 0, 0, 0, 2, -1, 2, -1, 2, 0, 0, 0},
+    {0, 0, 0, 0, 2, -1, 1, -1, 2, 0, 0, 0},
+    {0, 0, 0, 0, 2, -1, 1, -1, 2, 0, 0, 0},
+    {0, 0, 0, 0, 1, -1, 1, -1, 2, 0, 0, 0},
+    {0, 0, 0, 0, 1, -1, 1, -1, 2, 0, 0, 0},
+    {0, 0, 0, 0, 1, -1, 1, -1, 2, 0, 0, 0},
+    {0, 0, 0, 0, 1, -1, 1, -1, 2, 0, 0, 0},
+    {0, 0, 0, 0, 1, -2, 1, -1, 2, 0, 0, 0}, // key 08
+    {-1, 0, 0, 0, 1, -2, 0, -1, 2, 0, 0, 0},
+    {-1, 0, -1, 0, 1, -2, 0, -2, 2, 0, 0, 0},
+    {-1, 0, -1, 1, 1, -2, 0, -2, 1, 0, 0, 0},
+    {-1, -1, -1, 1, 1, -2, 0, -2, 1, 0, -1, 0},
+    {-1, -1, -1, 1, 1, -2, 0, -2, 1, 0, -1, 0},
+    {-1, -1, -1, 1, 1, -2, 0, -2, 1, 0, -1, 0},
+    {-1, -1, -1, 1, 1, -2, 0, -2, 1, 0, -1, 0},
+    {-1, -1, -1, 1, 1, -2, 0, -2, 1, 0, -1, 0}, // key 16
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0}, // key 24
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -3, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -6, -1, -2, 1, 0, -1, 1},
+    {-2, -1, -1, 1, 1, -6, -1, -2, 1, 0, -1, 1}, // key 32
+    {-2, -1, -1, 1, 1, -6, -1, -2, 1, 0, -1, 1},
+    {-2, -1, -1, 1, 1, -3, -1, -2, 1, 0, -1, 1},
+    {-2, -1, -1, 1, 1, -1, -1, -2, 1, 0, -1, 0},
+    {-1, -1, -1, 1, 2, -1, 0, -2, 1, 0, -1, 0},
+    {-1, -1, -1, 1, 2, -1, 0, -2, 1, 0, -1, 0},
+    {-1, -1, -1, 1, 2, -1, 0, -2, 1, 0, -1, 0},
+    {-1, -1, -1, 1, 2, -1, 0, -2, 1, 0, -1, 0},
+    {-1, -1, -1, 1, 2, 0, 0, -2, 1, 1, -1, 0}, // key 40
+    {-1, -1, -1, 1, 2, 0, 0, -2, 1, 1, -1, 0},
+    {-1, -1, -1, 0, 2, 0, 0, -2, 2, 1, 0, 0},
+    {-1, -1, 0, 0, 2, 0, 0, -1, 2, 1, 0, 0},
+    {-1, 0, 0, 0, 2, 0, 0, -1, 2, 1, 0, 0},
+    {0, 0, 0, 0, 2, 0, 1, -1, 2, 1, 0, 0},
+    {0, 0, 0, 0, 2, 0, 1, -1, 2, 1, 0, 0},
+    {0, 0, 0, 0, 2, 0, 1, -1, 2, 1, 0, 0},
+    {0, 0, 0, 0, 2, 0, 1, -1, 2, 1, 0, 0}, // key 48
+    {0, 0, 0, 0, 2, 0, 1, -1, 2, 1, 0, 0},
+    {0, 0, 0, 0, 2, 0, 1, -1, 2, 1, 0, 0},
+    {1, 0, 0, 0, 2, 0, 2, -1, 2, 1, 0, 0},
+    {1, 0, 0, 0, 2, 0, 2, -1, 2, 1, 0, 0},
+    {1, 0, 1, 0, 2, 0, 2, 0, 2, 1, 0, 0},
+    {1, 0, 1, -1, 2, 0, 2, 0, 3, 1, 1, 0},
+    {1, 0, 1, -1, 2, 0, 2, 0, 3, 1, 1, 0},
+    {1, 0, 1, -1, 2, 0, 2, 0, 3, 1, 1, 0}, // key 56
+    {1, 0, 1, -1, 2, 0, 2, 0, 3, 1, 1, 0},
+    {1, 1, 1, -1, 2, 0, 2, 0, 3, 1, 1, 0},
+    {2, 1, 1, -1, 2, 0, 3, 0, 3, 1, 1, 0},
+    {2, 1, 1, -1, 2, 0, 3, 0, 3, 1, 1, 0},
+    {2, 1, 1, -1, 2, 0, 3, 0, 3, 1, 1, 0},
+    {2, 1, 1, -1, 2, -1, 3, 0, 3, 1, 1, 0},
+    {2, 1, 1, -1, 2, -1, 3, 0, 3, 1, 1, 0},
+  },
+  { // 54: SASSY_ARC
+    {0, 0, 0, 0, 2, -1, 1, -1, 2, 0, 0, 0}, // key 00
+    {0, 0, 0, 0, 1, -1, 1, -1, 2, 0, 0, 0},
+    {0, 0, 0, 0, 1, -1, 1, -1, 2, 0, 0, 0},
+    {0, 0, 0, 0, 1, -1, 1, -1, 2, 0, 0, 0},
+    {-1, 0, 0, 0, 1, -1, 0, -1, 2, 0, 0, 0},
+    {-1, 0, 0, 0, 1, -2, 0, -1, 2, 0, 0, 0},
+    {-1, 0, -1, 0, 1, -2, 0, -2, 2, 0, 0, 0},
+    {-1, 0, -1, 1, 1, -2, 0, -2, 1, 0, -1, 0},
+    {-1, -1, -1, 1, 1, -2, 0, -2, 1, 0, -1, 0}, // key 08
+    {-1, -1, -1, 1, 1, -2, 0, -2, 1, 0, -1, 0},
+    {-1, -1, -1, 1, 1, -2, 0, -2, 1, 0, -1, 0},
+    {-1, -1, -1, 1, 1, -2, 0, -2, 1, 0, -1, 0},
+    {-1, -1, -1, 1, 1, -2, 0, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0}, // key 16
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0}, // key 24
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -1, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -1, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -1, -1, -2, 1, 0, -1, 1},
+    {-2, -1, -1, 1, 1, -1, -1, -2, 1, 0, -1, 1},
+    {-2, -1, -1, 1, 1, -1, -1, -2, 1, 0, -1, 1},
+    {-1, -1, -1, 1, 1, -1, 0, -2, 1, 0, -1, 1}, // key 32
+    {-1, -1, -1, 1, 2, -1, 0, -2, 1, 0, -1, 0},
+    {-1, -1, -1, 1, 2, -1, 0, -2, 1, 0, -1, 0},
+    {-1, -1, -1, 1, 0, -1, 0, -2, 1, 0, -1, 0},
+    {-1, -1, -1, 1, -3, -1, 0, -2, 1, 0, -1, 0},
+    {-1, -1, -1, 1, -3, 0, 0, -2, 1, 1, 0, 0},
+    {-1, -1, -1, 0, -3, 0, 0, -2, 2, 1, 0, 0},
+    {-1, -1, 0, 0, 0, 0, 0, -1, 2, 1, 0, 0},
+    {0, 0, 0, 0, 2, 0, 1, -1, 2, 1, 0, 0}, // key 40
+    {0, 0, 0, 0, 2, 0, 1, -1, 2, 1, 0, 0},
+    {0, 0, 0, 0, 2, 0, 1, -1, 2, 1, 0, 0},
+    {0, 0, 0, 0, 2, 0, 1, -1, 2, 1, 0, 0},
+    {0, 0, 0, 0, 2, 0, 1, -1, 2, 1, 0, 0},
+    {0, 0, 0, 0, 2, 0, 1, -1, 2, 1, 0, 0},
+    {0, 0, 0, 0, 2, 0, 1, -1, 2, 1, 0, 0},
+    {1, 0, 0, 0, 2, 0, 2, -1, 2, 1, 0, 0},
+    {1, 0, 0, 0, 2, 0, 2, 0, 2, 1, 0, 0}, // key 48
+    {1, 0, 1, 0, 2, 0, 2, 0, 2, 1, 0, 0},
+    {1, 0, 1, -1, 2, 0, 2, 0, 3, 1, 1, 0},
+    {1, 0, 1, -1, 2, 0, 2, 0, 3, 1, 1, 0},
+    {1, 0, 1, -1, 2, 0, 2, 0, 3, 1, 1, 0},
+    {1, 0, 1, -1, 2, 0, 2, 0, 3, 1, 1, 0},
+    {1, 1, 1, -1, 2, 0, 2, 0, 3, 1, 1, 0},
+    {2, 1, 1, -1, 2, 0, 3, 0, 3, 1, 1, 0},
+    {2, 1, 1, -1, 2, 0, 3, 0, 3, 1, 1, 0}, // key 56
+    {2, 1, 1, -1, 2, 0, 3, 0, 3, 1, 1, 0},
+    {2, 1, 1, -1, 2, 0, 3, 0, 3, 1, 1, 0},
+    {2, 1, 1, -1, 2, -1, 3, 0, 3, 1, 1, 0},
+    {2, 1, 1, -1, 2, -1, 3, 0, 3, 1, 1, 0},
+    {2, 1, 1, -1, 2, -1, 3, 0, 3, 0, 1, 0},
+    {2, 1, 1, -1, 2, -1, 3, 0, 3, 0, 1, 0},
+    {2, 1, 1, -1, 2, -1, 3, 0, 3, 0, 1, 0},
+  },
+  { // 55: SASSY_SETTLE
+    {0, 0, 0, 0, 2, -1, 1, -1, 2, 0, 0, 0}, // key 00
+    {0, 0, 0, 0, 2, -1, 1, -1, 2, 0, 0, 0},
+    {0, 0, 0, 0, 2, -1, 1, -1, 2, 0, 0, 0},
+    {0, 0, 0, 0, 2, -1, 1, -1, 2, 0, 0, 0},
+    {1, 0, 0, 0, 2, -1, 2, -1, 2, 1, 0, 0},
+    {1, 0, 1, 0, 2, 0, 2, 0, 2, 1, 0, 0},
+    {1, 0, 1, -1, 2, 0, 2, 0, 3, 1, 0, 0},
+    {1, 1, 1, -1, 2, 0, 2, 0, 3, 1, 1, 0},
+    {1, 1, 1, -1, 2, 0, 2, 0, 3, 1, 1, 1}, // key 08
+    {1, 1, 1, -1, 2, 0, 2, 0, 3, 1, 1, 1},
+    {1, 1, 1, -1, 2, 0, 2, 0, 3, 1, 1, 1},
+    {1, 1, 1, -1, 2, 0, 2, 0, 3, 1, 1, 1},
+    {2, 1, 1, -1, 2, 0, 3, 0, 3, 1, 1, 1},
+    {2, 1, 1, -1, 2, 0, 3, 0, 3, 1, 1, 0},
+    {2, 1, 1, -1, 2, 0, 3, 0, 3, 1, 1, 0},
+    {2, 1, 1, -1, 2, 0, 3, 0, 3, 1, 1, 0},
+    {2, 1, 1, -1, 2, 0, 3, 0, 3, 1, 1, 0}, // key 16
+    {2, 1, 1, -1, 2, 0, 3, 0, 3, 1, 1, 0},
+    {2, 1, 1, -1, 2, 0, 3, 0, 3, 1, 1, 0},
+    {2, 1, 1, -1, 2, 0, 3, 0, 3, 1, 1, 0},
+    {2, 1, 1, -1, 2, 0, 3, 0, 3, 1, 1, 0},
+    {2, 1, 1, -1, 2, 0, 3, 0, 3, 1, 1, 0},
+    {2, 1, 1, -1, 2, 0, 3, 0, 3, 1, 1, 0},
+    {2, 1, 1, -1, 2, 0, 3, 0, 3, 1, 1, 0},
+    {2, 1, 1, -1, 2, 0, 3, 0, 3, 1, 1, 0}, // key 24
+    {2, 1, 1, -1, 2, 0, 3, 0, 3, 1, 1, 0},
+    {2, 1, 1, -1, 2, -1, 3, 0, 3, 1, 1, 0},
+    {2, 1, 1, -1, 2, -1, 3, 0, 3, 1, 1, 0},
+    {2, 1, 1, -1, 2, -1, 3, 0, 3, 1, 1, 0},
+    {2, 1, 1, -1, 2, -1, 3, 0, 3, 0, 1, 0},
+    {2, 1, 1, -1, 2, -1, 3, 0, 3, 0, 1, 0},
+    {2, 1, 1, -1, 2, -1, 3, 0, 3, 0, 1, 0},
+    {1, 1, 1, -1, 2, -1, 2, 0, 3, 0, 1, 0}, // key 32
+    {1, 1, 1, -1, 1, -1, 2, 0, 3, 0, 1, 0},
+    {1, 1, 1, -1, 1, -1, 2, 0, 3, 0, 1, 0},
+    {1, 1, 1, -1, 1, -1, 2, 0, 3, 0, 1, 0},
+    {1, 1, 1, -1, 1, -1, 2, 0, 3, 0, 1, 0},
+    {1, 1, 1, 0, 1, -2, 2, 0, 2, 0, 0, 0},
+    {1, 1, 0, 0, 1, -2, 2, 0, 2, 0, 0, 0},
+    {1, 0, 0, 0, 1, -2, 2, -1, 2, 0, 0, 0},
+    {0, 0, 0, 0, 1, -4, 1, -1, 2, 0, 0, 0}, // key 40
+    {0, 0, 0, 0, 1, -7, 1, -1, 2, 0, 0, 0},
+    {0, 0, 0, 0, 1, -7, 1, -1, 2, 0, 0, 0},
+    {0, 0, 0, 0, 1, -7, 1, -1, 2, 0, 0, 0},
+    {0, 0, 0, 0, 1, -4, 1, -1, 2, 0, 0, 0},
+    {0, 0, 0, 0, 1, -2, 1, -1, 2, 0, 0, 0},
+    {0, 0, 0, 0, 1, -2, 1, -1, 2, 0, 0, 0},
+    {-1, 0, 0, 0, 1, -2, 0, -1, 2, 0, 0, 0},
+    {-1, 0, -1, 0, 0, -2, 0, -2, 2, 0, 0, 1}, // key 48
+    {-1, 0, -1, 1, 1, -2, 0, -2, 1, 0, 0, 1},
+    {-1, 0, -1, 1, 1, -2, 0, -2, 1, 0, -1, 1},
+    {-1, 0, -1, 1, 1, -2, 0, -2, 1, 0, -1, 1},
+    {-1, 0, -1, 1, 1, -2, 0, -2, 1, 0, -1, 1},
+    {-1, -1, -1, 1, 1, -2, 0, -2, 1, 0, -1, 0},
+    {-1, -1, -1, 1, 1, -2, 0, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0}, // key 56
+    {-2, -1, -1, 1, 1, -2, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -1, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -1, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -1, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -1, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -1, -1, -2, 1, 0, -1, 0},
+    {-2, -1, -1, 1, 1, -1, -1, -2, 1, 0, -1, 0},
+  },
+  { // 56: INTRO_ORBIT
+    {1, 2, 1, 1, 1, 1, 0, 0, 1, 0, 1, 3}, // key 00
+    {1, 2, 1, 1, 1, 1, 1, -1, 1, 0, 1, 3},
+    {1, 2, 1, 1, 1, 2, 1, -1, 1, 0, 1, 3},
+    {2, 2, 1, 1, 2, 2, 1, -1, 1, 0, 1, 3},
+    {2, 2, 2, 2, 2, 2, 1, -1, 1, 0, 2, 3},
+    {2, 1, 2, 2, 2, 2, 1, -1, 1, 1, 2, 3},
+    {2, 1, 2, 2, 2, 2, 1, -1, 1, 1, 2, 3},
+    {3, 1, 2, 2, 2, 2, 1, -1, 1, 1, 2, 3},
+    {3, 1, 2, 2, 2, 2, 1, -1, 2, 1, 2, 3}, // key 08
+    {3, 1, 2, 2, 2, 2, 1, -1, 2, 1, 2, 3},
+    {3, 1, 2, 2, 2, 2, 1, -1, 2, 1, 2, 3},
+    {3, 0, 2, 2, 2, 2, 1, -1, 2, 1, 2, 3},
+    {3, 0, 2, 2, 2, 2, 1, -1, 2, 1, 1, 3},
+    {3, 0, 2, 2, 2, 2, 1, -1, 2, 1, 1, 3},
+    {3, 0, 2, 2, 2, 2, 1, -1, 2, 1, 1, 1},
+    {3, 0, 2, 2, 2, 2, 1, -1, 2, 1, 1, 1},
+    {3, -1, 2, 2, 2, 2, 1, -1, 2, 1, 0, 1}, // key 16
+    {3, -1, 2, 2, 2, 1, 1, -1, 2, 1, 0, 1},
+    {3, -1, 2, 2, 1, 1, 1, -1, 2, 1, 0, 1},
+    {2, -1, 2, 2, 1, 1, 1, -1, 2, 1, -1, 1},
+    {2, -1, 2, 2, 1, 0, 1, -1, 2, 1, -1, 1},
+    {2, -1, 2, 2, 0, 0, 1, -1, 2, 1, -1, 1},
+    {2, -2, 2, 2, 0, 0, 1, -1, 2, 0, -1, 1},
+    {2, -2, 1, 1, 0, -1, 1, -1, 2, 0, -2, 1},
+    {1, -2, 1, 1, -1, -1, 1, -1, 2, 0, -2, 1}, // key 24
+    {1, -2, 1, 1, -1, -1, 1, -1, 2, 0, -2, 1},
+    {1, -2, 1, 1, -1, -1, 0, 0, 2, 0, -2, 1},
+    {1, -2, 0, 0, -1, -2, 0, 0, 2, 0, -2, 1},
+    {0, -2, 0, 0, -2, -2, 0, 0, 2, 0, -2, 1},
+    {0, -2, 0, 0, -2, -2, 0, 0, 1, 0, -2, 1},
+    {0, -2, 0, 0, -2, -2, 0, 0, 1, 0, -2, 1},
+    {-1, -2, -1, -1, -2, -2, 0, 0, 1, 0, -1, 1},
+    {-1, -2, -1, -1, -2, -2, 0, 0, 1, 0, -1, 3}, // key 32
+    {-1, -2, -1, -1, -2, -2, -1, 1, 1, 0, -1, 3},
+    {-1, -2, -1, -1, -2, -2, -1, 1, 1, 0, -1, 3},
+    {-2, -2, -1, -1, -2, -2, -1, 1, 1, 0, 0, 3},
+    {-2, -2, -2, -2, -2, -2, -1, 1, 1, 0, 0, 3},
+    {-2, -1, -2, -2, -2, -2, -1, 1, 1, 0, 0, 3},
+    {-2, -1, -2, -2, -2, -2, -1, 1, 0, 0, 1, 3},
+    {-3, -1, -2, -2, -2, -2, -1, 1, 0, 0, 1, 3},
+    {-3, -1, -2, -2, -2, -2, -1, 1, 0, 0, 1, 3}, // key 40
+    {-3, -1, -2, -2, -2, -1, -1, 1, 0, 0, 2, 3},
+    {-3, -1, -2, -2, -1, -1, -1, 1, 0, 0, 2, 3},
+    {-3, 0, -2, -2, -1, -1, -1, 1, 0, 0, 2, 3},
+    {-3, 0, -2, -2, -1, -1, -1, 1, 0, 0, 2, 3},
+    {-3, 0, -2, -2, -1, 0, -1, 1, -1, 0, 2, 3},
+    {-3, 0, -2, -2, 0, 0, -1, 1, -1, 0, 2, 1},
+    {-3, 0, -2, -2, 0, 0, -1, 1, -1, 0, 2, 1},
+    {-3, 1, -2, -2, 0, 1, -1, 1, -1, 0, 2, 1}, // key 48
+    {-3, 1, -2, -2, 1, 1, -1, 1, -1, 0, 2, 1},
+    {-3, 1, -2, -2, 1, 1, -1, 1, -1, 0, 1, 1},
+    {-2, 1, -2, -2, 1, 1, -1, 1, -1, 0, 1, 1},
+    {-2, 1, -2, -2, 2, 2, -1, 1, -1, 0, 1, 1},
+    {-2, 1, -2, -2, 2, 2, -1, 1, -1, 0, 1, 1},
+    {-2, 2, -2, -2, 2, 2, -1, 1, -2, 0, 0, 1},
+    {-2, 2, -1, -1, 2, 2, -1, 1, -2, 0, 0, 1},
+    {-1, 2, -1, -1, 2, 2, -1, 1, -2, 0, 0, 1}, // key 56
+    {-1, 2, -1, -1, 2, 2, -1, 1, -2, 0, -1, 1},
+    {-1, 2, -1, -1, 2, 2, 0, 0, -2, 0, -1, 1},
+    {-1, 2, 0, 0, 2, 2, 0, 0, -2, 0, -1, 1},
+    {0, 2, 0, 0, 2, 2, 0, 0, -2, 0, -2, 1},
+    {0, 2, 0, 0, 2, 2, 0, 0, -2, 0, -2, 1},
+    {0, 2, 0, 0, 2, 2, 0, 0, -2, 0, -2, 1},
+    {1, 2, 1, 1, 2, 2, 0, 0, -2, 0, -2, 1},
+  },
+  { // 57: INTRO_DROPLET
+    {2, 2, 1, 1, 1, 2, 1, -1, 1, 0, 1, 3}, // key 00
+    {2, 2, 2, 2, 2, 2, 1, -1, 1, 1, 1, 3},
+    {2, 1, 2, 2, 2, 2, 1, -1, 1, 1, 2, 3},
+    {2, 1, 2, 2, 2, 2, 1, -1, 1, 1, 2, 3},
+    {3, 1, 2, 2, 2, 2, 1, -1, 2, 1, 2, 3},
+    {3, 1, 2, 2, 2, 2, 1, -1, 2, 1, 2, 3},
+    {3, 1, 2, 2, 2, 2, 1, -1, 2, 1, 2, 3},
+    {3, 1, 2, 2, 2, 2, 1, -1, 2, 1, 2, 3},
+    {3, 0, 2, 2, 2, 2, 1, -1, 2, 1, 2, 3}, // key 08
+    {3, 0, 2, 2, 2, 2, 1, -1, 2, 1, 2, 3},
+    {3, 0, 2, 2, 2, 2, 1, -1, 2, 1, 2, 3},
+    {3, 0, 2, 2, 2, 2, 1, -1, 2, 1, 1, 3},
+    {3, 0, 2, 2, 2, 2, 1, -1, 2, 1, 1, 1},
+    {3, -1, 2, 2, 2, 2, 1, -1, 2, 1, 1, 1},
+    {2, -1, 2, 2, 2, 1, 1, -1, 2, 1, 0, 1},
+    {2, -1, 2, 2, 1, 1, 1, -1, 2, 1, 0, 1},
+    {2, -1, 1, 1, 1, 1, 1, -1, 2, 1, 0, 1}, // key 16
+    {1, -1, 1, 1, 1, 1, 1, -1, 2, 1, -1, 1},
+    {1, -1, 1, 1, 1, 0, 1, -1, 2, 1, -1, 1},
+    {1, -2, 1, 1, 0, 0, 0, 0, 2, 0, -1, 1},
+    {0, -2, 0, 0, 0, 0, 0, 0, 2, 0, -1, 1},
+    {0, -2, 0, 0, 0, -1, 0, 0, 2, 0, -2, 1},
+    {0, -2, 0, 0, -1, -1, 0, 0, 2, 0, -2, 1},
+    {-1, -2, 0, 0, -1, -1, 0, 0, 2, 0, -2, 1},
+    {-1, -2, -1, -1, -1, -1, 0, 0, 2, 0, -2, 1}, // key 24
+    {-1, -2, -1, -1, -2, -2, -1, 1, 1, 0, -2, 1},
+    {-2, -2, -1, -1, -2, -2, -1, 1, 1, 0, -2, 1},
+    {-2, -2, -2, -2, -2, -2, -1, 1, 1, 0, -2, 1},
+    {-2, -2, -2, -2, -2, -2, -1, 1, 1, 0, -2, 1},
+    {-2, -2, -2, -2, -2, -2, -1, 1, 1, 0, -1, 1},
+    {-3, -2, -2, -2, -2, -2, -1, 1, 1, 0, -1, 3},
+    {-3, -2, -2, -2, -2, -2, -1, 1, 1, 0, -1, 3},
+    {-3, -2, -2, -2, -2, -2, -1, 1, 1, 0, -1, 3}, // key 32
+    {-3, -2, -2, -2, -2, -2, -1, 1, 1, 0, 0, 3},
+    {-3, -1, -2, -2, -2, -2, -1, 1, 0, 0, 0, 3},
+    {-3, -1, -2, -2, -2, -2, -1, 1, 0, 0, 0, 3},
+    {-3, -1, -2, -2, -2, -2, -1, 1, 0, 0, 1, 3},
+    {-3, -1, -2, -2, -2, -2, -1, 1, 0, 0, 1, 3},
+    {-3, -1, -2, -2, -2, -2, -1, 1, 0, 0, 1, 3},
+    {-3, -1, -2, -2, -2, -1, -1, 1, 0, 0, 1, 3},
+    {-2, 0, -2, -2, -1, -1, -1, 1, 0, 0, 2, 3}, // key 40
+    {-2, 0, -2, -2, -1, -1, -1, 1, -1, 0, 2, 3},
+    {-2, 0, -2, -2, -1, -1, -1, 1, -1, 0, 2, 3},
+    {-2, 0, -1, -1, 0, 0, -1, 1, -1, 0, 2, 3},
+    {-1, 0, -1, -1, 0, 0, -1, 1, -1, 0, 2, 1},
+    {-1, 1, -1, -1, 0, 0, -1, 1, -1, 0, 2, 1},
+    {-1, 1, -1, -1, 1, 1, 0, 0, -1, 0, 2, 1},
+    {0, 1, 0, 0, 1, 1, 0, 0, -1, 0, 2, 1},
+    {0, 1, 0, 0, 1, 1, 0, 0, -1, 0, 1, 1}, // key 48
+    {0, 1, 0, 0, 1, 2, 0, 0, -1, 0, 1, 1},
+    {1, 1, 1, 1, 2, 2, 0, 0, -2, 0, 1, 1},
+    {1, 2, 1, 1, 2, 2, 1, -1, -2, 0, 1, 1},
+    {1, 2, 1, 1, 2, 2, 1, -1, -2, 0, 0, 1},
+    {2, 2, 1, 1, 2, 2, 1, -1, -2, 0, 0, 1},
+    {2, 2, 2, 2, 2, 2, 1, -1, -2, 0, 0, 1},
+    {2, 2, 2, 2, 2, 2, 1, -1, -2, 0, -1, 1},
+    {2, 2, 2, 2, 2, 2, 1, -1, -2, 0, -1, 1}, // key 56
+    {3, 2, 2, 2, 2, 2, 1, -1, -2, 0, -1, 1},
+    {3, 2, 2, 2, 2, 2, 1, -1, -2, 0, -2, 1},
+    {3, 2, 2, 2, 2, 2, 1, -1, -2, 0, -2, 1},
+    {3, 2, 2, 2, 2, 2, 1, -1, -2, 0, -2, 1},
+    {3, 2, 2, 2, 2, 2, 1, -1, -2, 0, -2, 1},
+    {3, 2, 2, 2, 2, 2, 1, -1, -2, 0, -2, 3},
+    {3, 2, 2, 2, 2, 2, 1, -1, -2, 0, -2, 3},
+  },
+  { // 58: INTRO_REVEAL
+    {2, 1, 2, 2, 2, 2, 1, -1, 2, 1, 2, 3}, // key 00
+    {3, 1, 2, 2, 2, 2, 1, -1, 2, 1, 2, 3},
+    {3, 1, 2, 2, 2, 2, 1, -1, 2, 1, 2, 3},
+    {3, 1, 2, 2, 2, 2, 1, -1, 2, 1, 2, 3},
+    {3, 0, 2, 2, 2, 2, 1, -1, 2, 1, 2, 3},
+    {3, 0, 2, 2, 2, 2, 1, -1, 2, 1, 2, 3},
+    {3, 0, 2, 2, 2, 2, 1, -1, 2, 1, 2, 3},
+    {3, 0, 2, 2, 2, 2, 1, -1, 2, 1, 2, 3},
+    {3, 0, 2, 2, 2, 2, 1, -1, 2, 1, 2, 3}, // key 08
+    {2, 0, 2, 2, 2, 2, 1, -1, 2, 1, 1, 3},
+    {2, -1, 2, 2, 2, 2, 1, -1, 2, 1, 1, 3},
+    {2, -1, 2, 2, 2, 2, 1, -1, 2, 1, 1, 1},
+    {2, -1, 1, 1, 2, 1, 1, -1, 2, 1, 0, 1},
+    {1, -1, 1, 1, 1, 1, 1, -1, 2, 1, 0, 1},
+    {1, -1, 1, 1, 1, 1, 0, 0, 2, 1, 0, 1},
+    {0, -1, 0, 0, 1, 0, 0, 0, 2, 1, -1, 1},
+    {0, -2, 0, 0, 0, 0, 0, 0, 2, 0, -1, 1}, // key 16
+    {0, -2, 0, 0, 0, 0, 0, 0, 2, 0, -1, 1},
+    {-1, -2, -1, -1, 0, 0, 0, 0, 2, 0, -1, 1},
+    {-1, -2, -1, -1, -1, -1, -1, 1, 2, 0, -2, 1},
+    {-2, -2, -1, -1, -1, -1, -1, 1, 1, 0, -2, 1},
+    {-2, -2, -2, -2, -1, -1, -1, 1, 1, 0, -2, 1},
+    {-2, -2, -2, -2, -1, -2, -1, 1, 1, 0, -2, 1},
+    {-2, -2, -2, -2, -2, -2, -1, 1, 1, 0, -2, 1},
+    {-3, -2, -2, -2, -2, -2, -1, 1, 1, 0, -2, 1}, // key 24
+    {-3, -2, -2, -2, -2, -2, -1, 1, 1, 0, -2, 1},
+    {-3, -2, -2, -2, -2, -2, -1, 1, 1, 0, -2, 1},
+    {-3, -2, -2, -2, -2, -2, -1, 1, 1, 0, -1, 1},
+    {-3, -2, -2, -2, -2, -2, -1, 1, 1, 0, -1, 1},
+    {-3, -2, -2, -2, -2, -2, -1, 1, 0, 0, -1, 3},
+    {-3, -1, -2, -2, -2, -2, -1, 1, 0, 0, -1, 3},
+    {-3, -1, -2, -2, -2, -2, -1, 1, 0, 0, 0, 3},
+    {-2, -1, -2, -2, -2, -2, -1, 1, 0, 0, 0, 3}, // key 32
+    {-2, -1, -2, -2, -2, -2, -1, 1, 0, 0, 0, 3},
+    {-2, -1, -2, -2, -2, -2, -1, 1, 0, 0, 1, 3},
+    {-2, -1, -1, -1, -2, -2, -1, 1, 0, 0, 1, 3},
+    {-1, 0, -1, -1, -2, -2, -1, 1, -1, 0, 1, 3},
+    {-1, 0, -1, -1, -1, -1, 0, 0, -1, 0, 1, 3},
+    {0, 0, 0, 0, -1, -1, 0, 0, -1, 0, 2, 3},
+    {0, 0, 0, 0, -1, -1, 0, 0, -1, 0, 2, 3},
+    {0, 0, 0, 0, -1, 0, 0, 0, -1, 0, 2, 3}, // key 40
+    {1, 0, 1, 1, 0, 0, 0, 0, -1, 0, 2, 3},
+    {1, 1, 1, 1, 0, 0, 1, -1, -1, 0, 2, 3},
+    {2, 1, 1, 1, 0, 1, 1, -1, -1, 0, 2, 1},
+    {2, 1, 2, 2, 1, 1, 1, -1, -1, 0, 2, 1},
+    {2, 1, 2, 2, 1, 1, 1, -1, -2, 0, 2, 1},
+    {2, 1, 2, 2, 1, 1, 1, -1, -2, 0, 1, 1},
+    {3, 1, 2, 2, 2, 2, 1, -1, -2, 0, 1, 1},
+    {3, 2, 2, 2, 2, 2, 1, -1, -2, 0, 1, 1}, // key 48
+    {3, 2, 2, 2, 2, 2, 1, -1, -2, 0, 1, 1},
+    {3, 2, 2, 2, 2, 2, 1, -1, -2, 0, 0, 1},
+    {3, 2, 2, 2, 2, 2, 1, -1, -2, 0, 0, 1},
+    {3, 2, 2, 2, 2, 2, 1, -1, -2, 0, 0, 1},
+    {3, 2, 2, 2, 2, 2, 1, -1, -2, 0, -1, 1},
+    {3, 2, 2, 2, 2, 2, 1, -1, -2, 0, -1, 1},
+    {2, 2, 2, 2, 2, 2, 1, -1, -2, 0, -1, 1},
+    {2, 2, 2, 2, 2, 2, 1, -1, -2, 0, -2, 1}, // key 56
+    {2, 2, 2, 2, 2, 2, 1, -1, -2, 0, -2, 1},
+    {1, 2, 1, 1, 2, 2, 1, -1, -2, 0, -2, 1},
+    {1, 2, 1, 1, 2, 2, 1, -1, -2, 0, -2, 1},
+    {1, 2, 1, 1, 2, 2, 0, 0, -2, 0, -2, 1},
+    {0, 2, 0, 0, 2, 1, 0, 0, -2, 0, -2, 3},
+    {0, 1, 0, 0, 1, 1, 0, 0, -2, 1, -2, 3},
+    {0, 1, 0, 0, 1, 1, 0, 0, -2, 1, -2, 3},
+  },
+  { // 59: INTRO_PULSE
+    {3, 1, 2, 2, 2, 2, 1, -1, 2, 1, 2, 3}, // key 00
+    {3, 0, 2, 2, 2, 2, 1, -1, 2, 1, 2, 3},
+    {3, 0, 2, 2, 2, 2, 1, -1, 2, 1, 2, 3},
+    {3, 0, 2, 2, 2, 2, 1, -1, 2, 1, 2, 3},
+    {3, 0, 2, 2, 2, 2, 1, -1, 2, 1, 2, 3},
+    {3, 0, 2, 2, 2, 2, 1, -1, 2, 1, 2, 3},
+    {3, -1, 2, 2, 2, 2, 1, -1, 2, 1, 2, 3},
+    {3, -1, 2, 2, 2, 2, 1, -1, 2, 1, 1, 3},
+    {3, -1, 2, 2, 2, 2, 1, -1, 2, 1, 1, 3}, // key 08
+    {3, -1, 2, 2, 2, 2, 1, -1, 2, 1, 1, 1},
+    {2, -1, 2, 2, 1, 1, 1, -1, 2, 1, 0, 1},
+    {2, -1, 2, 2, 1, 1, 1, -1, 2, 1, 0, 1},
+    {2, -1, 2, 2, 1, 1, 1, -1, 2, 1, 0, 1},
+    {2, -2, 1, 1, 1, 0, 1, -1, 2, 0, -1, 1},
+    {2, -2, 1, 1, 0, 0, 1, -1, 2, 0, -1, 1},
+    {1, -2, 1, 1, 0, 0, 1, -1, 2, 0, -1, 1},
+    {1, -2, 1, 1, 0, -1, 0, 0, 1, 0, -1, 1}, // key 16
+    {1, -2, 1, 1, -1, -1, 0, 0, 1, 0, -2, 1},
+    {0, -2, 0, 0, -1, -1, 0, 0, 1, 0, -2, 1},
+    {0, -2, 0, 0, -1, -1, 0, 0, 1, 0, -2, 1},
+    {0, -2, 0, 0, -2, -2, 0, 0, 1, 0, -2, 1},
+    {0, -2, 0, 0, -2, -2, 0, 0, 1, 0, -2, 1},
+    {-1, -2, -1, -1, -2, -2, 0, 0, 1, 0, -2, 1},
+    {-1, -2, -1, -1, -2, -2, -1, 1, 1, 0, -2, 1},
+    {-1, -2, -1, -1, -2, -2, -1, 1, 0, 0, -2, 1}, // key 24
+    {-2, -2, -1, -1, -2, -2, -1, 1, 0, 0, -2, 1},
+    {-2, -2, -2, -2, -2, -2, -1, 1, 0, 0, -1, 1},
+    {-2, -1, -2, -2, -2, -2, -1, 1, 0, 0, -1, 3},
+    {-2, -1, -2, -2, -2, -2, -1, 1, 0, 0, -1, 3},
+    {-2, -1, -2, -2, -2, -2, -1, 1, 0, 0, 0, 3},
+    {-3, -1, -2, -2, -2, -2, -1, 1, 0, 0, 0, 3},
+    {-3, -1, -2, -2, -2, -2, -1, 1, 0, 0, 0, 3},
+    {-3, -1, -2, -2, -2, -2, -1, 1, -1, 0, 1, 3}, // key 32
+    {-3, 0, -2, -2, -2, -2, -1, 1, -1, 0, 1, 3},
+    {-3, 0, -2, -2, -2, -1, -1, 1, -1, 0, 1, 3},
+    {-3, 0, -2, -2, -1, -1, -1, 1, -1, 0, 1, 3},
+    {-3, 0, -2, -2, -1, -1, -1, 1, -1, 0, 2, 3},
+    {-3, 0, -2, -2, -1, -1, -1, 1, -1, 0, 2, 3},
+    {-3, 1, -2, -2, 0, 0, -1, 1, -1, 0, 2, 3},
+    {-3, 1, -2, -2, 0, 0, -1, 1, -1, 0, 2, 3},
+    {-3, 1, -2, -2, 0, 0, -1, 1, -1, 0, 2, 3}, // key 40
+    {-3, 1, -2, -2, 0, 1, -1, 1, -2, 0, 2, 1},
+    {-2, 1, -2, -2, 1, 1, -1, 1, -2, 0, 2, 1},
+    {-2, 1, -2, -2, 1, 1, -1, 1, -2, 0, 2, 1},
+    {-2, 1, -2, -2, 1, 2, -1, 1, -2, 0, 1, 1},
+    {-2, 2, -1, -1, 2, 2, -1, 1, -2, 0, 1, 1},
+    {-2, 2, -1, -1, 2, 2, -1, 1, -2, 0, 1, 1},
+    {-1, 2, -1, -1, 2, 2, -1, 1, -2, 0, 1, 1},
+    {-1, 2, -1, -1, 2, 2, 0, 0, -2, 0, 0, 1}, // key 48
+    {-1, 2, -1, -1, 2, 2, 0, 0, -2, 0, 0, 1},
+    {0, 2, 0, 0, 2, 2, 0, 0, -2, 0, 0, 1},
+    {0, 2, 0, 0, 2, 2, 0, 0, -2, 0, -1, 1},
+    {0, 2, 0, 0, 2, 2, 0, 0, -2, 0, -1, 1},
+    {0, 2, 0, 0, 2, 2, 0, 0, -2, 0, -1, 1},
+    {1, 2, 1, 1, 2, 2, 0, 0, -2, 0, -1, 1},
+    {1, 2, 1, 1, 2, 2, 1, -1, -2, 0, -2, 1},
+    {1, 2, 1, 1, 2, 2, 1, -1, -2, 0, -2, 1}, // key 56
+    {2, 2, 1, 1, 2, 2, 1, -1, -2, 0, -2, 1},
+    {2, 2, 2, 2, 2, 2, 1, -1, -2, 0, -2, 1},
+    {2, 1, 2, 2, 2, 1, 1, -1, -2, 1, -2, 3},
+    {2, 1, 2, 2, 1, 1, 1, -1, -2, 1, -2, 3},
+    {2, 1, 2, 2, 1, 1, 1, -1, -2, 1, -2, 3},
+    {3, 1, 2, 2, 1, 0, 1, -1, -1, 1, -2, 3},
+    {3, 1, 2, 2, 0, 0, 1, -1, -1, 1, -1, 3},
+  },
+  { // 60: INTRO_SPARK
+    {3, 0, 2, 2, 2, 2, 1, -1, 2, 1, 2, 3}, // key 00
+    {3, 0, 2, 2, 2, 2, 1, -1, 2, 1, 2, 3},
+    {3, 0, 2, 2, 2, 2, 1, -1, 2, 1, 2, 3},
+    {3, -1, 2, 2, 2, 2, 1, -1, 2, 1, 2, 3},
+    {3, -1, 2, 2, 2, 2, 1, -1, 2, 1, 2, 3},
+    {3, -1, 2, 2, 2, 2, 1, -1, 2, 1, 1, 3},
+    {2, -1, 2, 2, 2, 2, 1, -1, 2, 1, 1, 3},
+    {2, -1, 2, 2, 2, 1, 1, -1, 2, 1, 1, 3},
+    {2, -1, 2, 2, 1, 1, 1, -1, 2, 1, 1, 1}, // key 08
+    {2, -2, 1, 1, 1, 1, 1, -1, 2, 1, 0, 1},
+    {1, -2, 1, 1, 1, 1, 1, -1, 2, 0, 0, 1},
+    {1, -2, 1, 1, 0, 0, 0, 0, 1, 0, 0, 1},
+    {1, -2, 0, 0, 0, 0, 0, 0, 1, 0, -1, 1},
+    {0, -2, 0, 0, 0, 0, 0, 0, 1, 0, -1, 1},
+    {0, -2, 0, 0, 0, -1, 0, 0, 1, 0, -1, 1},
+    {-1, -2, 0, 0, -1, -1, 0, 0, 1, 0, -2, 1},
+    {-1, -2, -1, -1, -1, -1, 0, 0, 1, 0, -2, 1}, // key 16
+    {-1, -2, -1, -1, -1, -2, -1, 1, 1, 0, -2, 1},
+    {-2, -2, -1, -1, -2, -2, -1, 1, 1, 0, -2, 1},
+    {-2, -2, -2, -2, -2, -2, -1, 1, 1, 0, -2, 1},
+    {-2, -2, -2, -2, -2, -2, -1, 1, 0, 0, -2, 1},
+    {-2, -2, -2, -2, -2, -2, -1, 1, 0, 0, -2, 1},
+    {-3, -2, -2, -2, -2, -2, -1, 1, 0, 0, -2, 1},
+    {-3, -2, -2, -2, -2, -2, -1, 1, 0, 0, -2, 1},
+    {-3, -1, -2, -2, -2, -2, -1, 1, 0, 0, -1, 1}, // key 24
+    {-3, -1, -2, -2, -2, -2, -1, 1, 0, 0, -1, 1},
+    {-3, -1, -2, -2, -2, -2, -1, 1, 0, 0, -1, 3},
+    {-3, -1, -2, -2, -2, -2, -1, 1, -1, 0, 0, 3},
+    {-3, -1, -2, -2, -2, -2, -1, 1, -1, 0, 0, 3},
+    {-3, -1, -2, -2, -2, -2, -1, 1, -1, 0, 0, 3},
+    {-3, 0, -2, -2, -2, -2, -1, 1, -1, 0, 1, 3},
+    {-3, 0, -2, -2, -2, -2, -1, 1, -1, 0, 1, 3},
+    {-2, 0, -2, -2, -2, -1, -1, 1, -1, 0, 1, 3}, // key 32
+    {-2, 0, -2, -2, -1, -1, -1, 1, -1, 0, 1, 3},
+    {-2, 0, -2, -2, -1, -1, -1, 1, -1, 0, 2, 3},
+    {-2, 1, -1, -1, -1, 0, -1, 1, -1, 0, 2, 3},
+    {-1, 1, -1, -1, 0, 0, -1, 1, -2, 0, 2, 3},
+    {-1, 1, -1, -1, 0, 0, -1, 1, -2, 0, 2, 3},
+    {-1, 1, -1, -1, 0, 1, 0, 0, -2, 0, 2, 3},
+    {0, 1, 0, 0, 1, 1, 0, 0, -2, 0, 2, 3},
+    {0, 1, 0, 0, 1, 1, 0, 0, -2, 0, 2, 1}, // key 40
+    {0, 2, 0, 0, 1, 1, 0, 0, -2, 0, 2, 1},
+    {1, 2, 1, 1, 1, 2, 0, 0, -2, 0, 2, 1},
+    {1, 2, 1, 1, 2, 2, 0, 0, -2, 0, 1, 1},
+    {1, 2, 1, 1, 2, 2, 1, -1, -2, 0, 1, 1},
+    {2, 2, 1, 1, 2, 2, 1, -1, -2, 0, 1, 1},
+    {2, 2, 2, 2, 2, 2, 1, -1, -2, 0, 0, 1},
+    {2, 2, 2, 2, 2, 2, 1, -1, -2, 0, 0, 1},
+    {2, 2, 2, 2, 2, 2, 1, -1, -2, 0, 0, 1}, // key 48
+    {3, 2, 2, 2, 2, 2, 1, -1, -2, 0, -1, 1},
+    {3, 2, 2, 2, 2, 2, 1, -1, -2, 0, -1, 1},
+    {3, 2, 2, 2, 2, 2, 1, -1, -2, 0, -1, 1},
+    {3, 2, 2, 2, 2, 2, 1, -1, -2, 0, -1, 1},
+    {3, 2, 2, 2, 2, 2, 1, -1, -2, 0, -2, 1},
+    {3, 2, 2, 2, 2, 2, 1, -1, -2, 0, -2, 1},
+    {3, 2, 2, 2, 2, 2, 1, -1, -2, 0, -2, 1},
+    {3, 1, 2, 2, 2, 1, 1, -1, -2, 1, -2, 1}, // key 56
+    {3, 1, 2, 2, 1, 1, 1, -1, -1, 1, -2, 1},
+    {3, 1, 2, 2, 1, 1, 1, -1, -1, 1, -2, 3},
+    {2, 1, 2, 2, 1, 1, 1, -1, -1, 1, -2, 3},
+    {2, 1, 2, 2, 1, 0, 1, -1, -1, 1, -2, 3},
+    {2, 1, 2, 2, 0, 0, 1, -1, -1, 1, -1, 3},
+    {2, 0, 1, 1, 0, 0, 1, -1, -1, 1, -1, 3},
+    {1, 0, 1, 1, 0, -1, 1, -1, -1, 1, -1, 3},
+  },
+  { // 61: INTRO_TEXT_REVEAL
+    {3, -1, 2, 2, 2, 2, 1, -1, 2, 1, 2, 3}, // key 00
+    {3, -1, 2, 2, 2, 2, 1, -1, 2, 1, 2, 3},
+    {3, -1, 2, 2, 2, 2, 1, -1, 2, 1, 2, 3},
+    {2, -1, 2, 2, 2, 2, 1, -1, 2, 1, 1, 3},
+    {2, -1, 2, 2, 2, 2, 1, -1, 2, 1, 1, 3},
+    {2, -1, 1, 1, 1, 1, 1, -1, 2, 1, 1, 3},
+    {1, -2, 1, 1, 1, 1, 1, -1, 2, 0, 1, 1},
+    {1, -2, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1},
+    {1, -2, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1}, // key 08
+    {0, -2, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1},
+    {0, -2, 0, 0, 0, 0, 0, 0, 1, 0, -1, 1},
+    {-1, -2, -1, -1, 0, -1, 0, 0, 1, 0, -1, 1},
+    {-1, -2, -1, -1, -1, -1, -1, 1, 1, 0, -1, 1},
+    {-1, -2, -1, -1, -1, -1, -1, 1, 1, 0, -2, 1},
+    {-2, -2, -1, -1, -1, -1, -1, 1, 1, 0, -2, 1},
+    {-2, -2, -2, -2, -1, -2, -1, 1, 0, 0, -2, 1},
+    {-2, -2, -2, -2, -2, -2, -1, 1, 0, 0, -2, 1}, // key 16
+    {-3, -2, -2, -2, -2, -2, -1, 1, 0, 0, -2, 1},
+    {-3, -2, -2, -2, -2, -2, -1, 1, 0, 0, -2, 1},
+    {-3, -2, -2, -2, -2, -2, -1, 1, 0, 0, -2, 1},
+    {-3, -2, -2, -2, -2, -2, -1, 1, 0, 0, -2, 1},
+    {-3, -1, -2, -2, -2, -2, -1, 1, 0, 0, -2, 1},
+    {-3, -1, -2, -2, -2, -2, -1, 1, 0, 0, -1, 1},
+    {-3, -1, -2, -2, -2, -2, -1, 1, -1, 0, -1, 1},
+    {-3, -1, -2, -2, -2, -2, -1, 1, -1, 0, -1, 3}, // key 24
+    {-3, -1, -2, -2, -2, -2, -1, 1, -1, 0, 0, 3},
+    {-2, -1, -2, -2, -2, -2, -1, 1, -1, 0, 0, 3},
+    {-2, 0, -2, -2, -2, -2, -1, 1, -1, 0, 0, 3},
+    {-2, 0, -1, -1, -2, -2, -1, 1, -1, 0, 0, 3},
+    {-1, 0, -1, -1, -2, -1, -1, 1, -1, 0, 1, 3},
+    {-1, 0, -1, -1, -1, -1, 0, 0, -1, 0, 1, 3},
+    {0, 0, 0, 0, -1, -1, 0, 0, -2, 0, 1, 3},
+    {0, 1, 0, 0, -1, -1, 0, 0, -2, 0, 2, 3}, // key 32
+    {0, 1, 0, 0, -1, 0, 0, 0, -2, 0, 2, 3},
+    {1, 1, 1, 1, 0, 0, 0, 0, -2, 0, 2, 3},
+    {1, 1, 1, 1, 0, 0, 1, -1, -2, 0, 2, 3},
+    {2, 1, 1, 1, 0, 1, 1, -1, -2, 0, 2, 3},
+    {2, 1, 2, 2, 1, 1, 1, -1, -2, 0, 2, 3},
+    {2, 2, 2, 2, 1, 1, 1, -1, -2, 0, 2, 1},
+    {2, 2, 2, 2, 1, 2, 1, -1, -2, 0, 2, 1},
+    {3, 2, 2, 2, 2, 2, 1, -1, -2, 0, 2, 1}, // key 40
+    {3, 2, 2, 2, 2, 2, 1, -1, -2, 0, 1, 1},
+    {3, 2, 2, 2, 2, 2, 1, -1, -2, 0, 1, 1},
+    {3, 2, 2, 2, 2, 2, 1, -1, -2, 0, 1, 1},
+    {3, 2, 2, 2, 2, 2, 1, -1, -2, 0, 0, 1},
+    {3, 2, 2, 2, 2, 2, 1, -1, -2, 0, 0, 1},
+    {3, 2, 2, 2, 2, 2, 1, -1, -2, 0, 0, 1},
+    {3, 2, 2, 2, 2, 2, 1, -1, -2, 0, -1, 1},
+    {2, 2, 2, 2, 2, 2, 1, -1, -2, 0, -1, 1}, // key 48
+    {2, 2, 2, 2, 2, 2, 1, -1, -2, 0, -1, 1},
+    {2, 2, 2, 2, 2, 2, 1, -1, -2, 0, -1, 1},
+    {2, 2, 1, 1, 2, 2, 1, -1, -2, 0, -2, 1},
+    {1, 2, 1, 1, 2, 2, 1, -1, -2, 0, -2, 1},
+    {1, 1, 1, 1, 2, 2, 0, 0, -1, 1, -2, 1},
+    {0, 1, 0, 0, 2, 1, 0, 0, -1, 1, -2, 1},
+    {0, 1, 0, 0, 1, 1, 0, 0, -1, 1, -2, 1},
+    {0, 1, 0, 0, 1, 1, 0, 0, -1, 1, -2, 3}, // key 56
+    {-1, 1, -1, -1, 1, 0, 0, 0, -1, 1, -2, 3},
+    {-1, 1, -1, -1, 0, 0, -1, 1, -1, 1, -2, 3},
+    {-2, 0, -1, -1, 0, 0, -1, 1, -1, 1, -2, 3},
+    {-2, 0, -2, -2, 0, 0, -1, 1, -1, 1, -1, 3},
+    {-2, 0, -2, -2, -1, -1, -1, 1, 0, 1, -1, 3},
+    {-2, 0, -2, -2, -1, -1, -1, 1, 0, 1, -1, 3},
+    {-3, 0, -2, -2, -1, -1, -1, 1, 0, 1, 0, 3},
+  },
+  { // 62: INTRO_IDLE
+    {2, -1, 2, 2, 2, 2, 1, -1, 2, 1, 2, 3}, // key 00
+    {2, -1, 2, 2, 2, 2, 1, -1, 2, 1, 1, 3},
+    {2, -1, 2, 2, 2, 1, 1, -1, 1, 1, 1, 3},
+    {2, -2, 2, 2, 1, 1, 1, -1, 1, 0, 1, 3},
+    {2, -2, 1, 1, 1, 1, 1, -1, 1, 0, 1, 1},
+    {1, -2, 1, 1, 1, 1, 1, -1, 1, 0, 0, 1},
+    {1, -2, 1, 1, 1, 0, 1, -1, 1, 0, 0, 1},
+    {1, -2, 1, 1, 0, 0, 0, 0, 1, 0, 0, 1},
+    {1, -2, 0, 0, 0, 0, 0, 0, 1, 0, -1, 1}, // key 08
+    {0, -2, 0, 0, 0, -1, 0, 0, 1, 0, -1, 1},
+    {0, -2, 0, 0, -1, -1, 0, 0, 1, 0, -1, 1},
+    {0, -2, 0, 0, -1, -1, 0, 0, 0, 0, -2, 1},
+    {-1, -2, -1, -1, -1, -2, 0, 0, 0, 0, -2, 1},
+    {-1, -2, -1, -1, -2, -2, 0, 0, 0, 0, -2, 1},
+    {-1, -2, -1, -1, -2, -2, -1, 1, 0, 0, -2, 1},
+    {-1, -2, -1, -1, -2, -2, -1, 1, 0, 0, -2, 1},
+    {-2, -2, -1, -1, -2, -2, -1, 1, 0, 0, -2, 1}, // key 16
+    {-2, -2, -2, -2, -2, -2, -1, 1, 0, 0, -2, 1},
+    {-2, -1, -2, -2, -2, -2, -1, 1, -1, 0, -2, 1},
+    {-2, -1, -2, -2, -2, -2, -1, 1, -1, 0, -2, 1},
+    {-3, -1, -2, -2, -2, -2, -1, 1, -1, 0, -1, 1},
+    {-3, -1, -2, -2, -2, -2, -1, 1, -1, 0, -1, 1},
+    {-3, -1, -2, -2, -2, -2, -1, 1, -1, 0, -1, 3},
+    {-3, -1, -2, -2, -2, -2, -1, 1, -1, 0, -1, 3},
+    {-3, 0, -2, -2, -2, -2, -1, 1, -1, 0, 0, 3}, // key 24
+    {-3, 0, -2, -2, -2, -2, -1, 1, -1, 0, 0, 3},
+    {-3, 0, -2, -2, -2, -2, -1, 1, -1, 0, 0, 3},
+    {-3, 0, -2, -2, -2, -1, -1, 1, -2, 0, 1, 3},
+    {-3, 0, -2, -2, -1, -1, -1, 1, -2, 0, 1, 3},
+    {-3, 1, -2, -2, -1, -1, -1, 1, -2, 0, 1, 3},
+    {-3, 1, -2, -2, -1, 0, -1, 1, -2, 0, 2, 3},
+    {-3, 1, -2, -2, 0, 0, -1, 1, -2, 0, 2, 3},
+    {-2, 1, -2, -2, 0, 0, -1, 1, -2, 0, 2, 3}, // key 32
+    {-2, 1, -2, -2, 0, 0, -1, 1, -2, 0, 2, 3},
+    {-2, 1, -2, -2, 1, 1, -1, 1, -2, 0, 2, 3},
+    {-2, 2, -2, -2, 1, 1, -1, 1, -2, 0, 2, 3},
+    {-2, 2, -1, -1, 1, 1, -1, 1, -2, 0, 2, 1},
+    {-1, 2, -1, -1, 1, 2, -1, 1, -2, 0, 2, 1},
+    {-1, 2, -1, -1, 2, 2, -1, 1, -2, 0, 2, 1},
+    {-1, 2, -1, -1, 2, 2, 0, 0, -2, 0, 1, 1},
+    {-1, 2, 0, 0, 2, 2, 0, 0, -2, 0, 1, 1}, // key 40
+    {0, 2, 0, 0, 2, 2, 0, 0, -2, 0, 1, 1},
+    {0, 2, 0, 0, 2, 2, 0, 0, -2, 0, 0, 1},
+    {0, 2, 0, 0, 2, 2, 0, 0, -2, 0, 0, 1},
+    {1, 2, 1, 1, 2, 2, 0, 0, -2, 0, 0, 1},
+    {1, 2, 1, 1, 2, 2, 0, 0, -2, 0, -1, 1},
+    {1, 2, 1, 1, 2, 2, 1, -1, -2, 0, -1, 1},
+    {1, 2, 1, 1, 2, 2, 1, -1, -2, 0, -1, 1},
+    {2, 2, 1, 1, 2, 2, 1, -1, -1, 0, -1, 1}, // key 48
+    {2, 2, 2, 2, 2, 2, 1, -1, -1, 0, -2, 1},
+    {2, 1, 2, 2, 2, 2, 1, -1, -1, 1, -2, 1},
+    {2, 1, 2, 2, 2, 2, 1, -1, -1, 1, -2, 1},
+    {3, 1, 2, 2, 1, 1, 1, -1, -1, 1, -2, 1},
+    {3, 1, 2, 2, 1, 1, 1, -1, -1, 1, -2, 1},
+    {3, 1, 2, 2, 1, 1, 1, -1, -1, 1, -2, 3},
+    {3, 1, 2, 2, 1, 0, 1, -1, -1, 1, -2, 3},
+    {3, 0, 2, 2, 0, 0, 1, -1, -1, 1, -2, 3}, // key 56
+    {3, 0, 2, 2, 0, 0, 1, -1, 0, 1, -2, 3},
+    {3, 0, 2, 2, 0, -1, 1, -1, 0, 1, -1, 3},
+    {3, 0, 2, 2, -1, -1, 1, -1, 0, 1, -1, 3},
+    {3, 0, 2, 2, -1, -1, 1, -1, 0, 1, -1, 3},
+    {3, -1, 2, 2, -1, -1, 1, -1, 0, 1, 0, 3},
+    {3, -1, 2, 2, -2, -2, 1, -1, 0, 1, 0, 3},
+    {3, -1, 2, 2, -2, -2, 1, -1, 0, 1, 0, 3},
+  },
+  { // 63: INTRO_EXIT
+    {2, -2, 2, 2, 2, 1, 1, -1, 1, 0, 1, 3}, // key 00
+    {2, -2, 1, 1, 1, 1, 1, -1, 1, 0, 1, 3},
+    {1, -2, 1, 1, 1, 1, 1, -1, 1, 0, 1, 3},
+    {1, -2, 1, 1, 1, 0, 0, 0, 1, 0, 0, 1},
+    {1, -2, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1},
+    {0, -2, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1},
+    {0, -2, 0, 0, 0, -1, 0, 0, 0, 0, -1, 1},
+    {0, -2, 0, 0, -1, -1, 0, 0, 0, 0, -1, 1},
+    {-1, -2, -1, -1, -1, -1, 0, 0, 0, 0, -1, 1}, // key 08
+    {-1, -2, -1, -1, -1, -1, -1, 1, 0, 0, -1, 1},
+    {-1, -2, -1, -1, -1, -2, -1, 1, 0, 0, -2, 1},
+    {-2, -2, -1, -1, -2, -2, -1, 1, 0, 0, -2, 1},
+    {-2, -2, -2, -2, -2, -2, -1, 1, 0, 0, -2, 1},
+    {-2, -2, -2, -2, -2, -2, -1, 1, 0, 0, -2, 1},
+    {-3, -2, -2, -2, -2, -2, -1, 1, -1, 0, -2, 1},
+    {-3, -1, -2, -2, -2, -2, -1, 1, -1, 0, -2, 1},
+    {-3, -1, -2, -2, -2, -2, -1, 1, -1, 0, -2, 1}, // key 16
+    {-3, -1, -2, -2, -2, -2, -1, 1, -1, 0, -2, 1},
+    {-3, -1, -2, -2, -2, -2, -1, 1, -1, 0, -1, 1},
+    {-3, -1, -2, -2, -2, -2, -1, 1, -1, 0, -1, 1},
+    {-3, -1, -2, -2, -2, -2, -1, 1, -1, 0, -1, 1},
+    {-3, 0, -2, -2, -2, -2, -1, 1, -1, 0, -1, 3},
+    {-3, 0, -2, -2, -2, -2, -1, 1, -2, 0, 0, 3},
+    {-3, 0, -2, -2, -2, -2, -1, 1, -2, 0, 0, 3},
+    {-2, 0, -2, -2, -2, -1, -1, 1, -2, 0, 0, 3}, // key 24
+    {-2, 0, -2, -2, -1, -1, -1, 1, -2, 0, 1, 3},
+    {-2, 1, -2, -2, -1, -1, -1, 1, -2, 0, 1, 3},
+    {-2, 1, -1, -1, -1, -1, -1, 1, -2, 0, 1, 3},
+    {-1, 1, -1, -1, -1, 0, -1, 1, -2, 0, 2, 3},
+    {-1, 1, -1, -1, 0, 0, -1, 1, -2, 0, 2, 3},
+    {-1, 1, -1, -1, 0, 0, 0, 0, -2, 0, 2, 3},
+    {0, 1, 0, 0, 0, 1, 0, 0, -2, 0, 2, 3},
+    {0, 2, 0, 0, 1, 1, 0, 0, -2, 0, 2, 3}, // key 32
+    {0, 2, 0, 0, 1, 1, 0, 0, -2, 0, 2, 3},
+    {1, 2, 1, 1, 1, 1, 0, 0, -2, 0, 2, 3},
+    {1, 2, 1, 1, 2, 2, 0, 0, -2, 0, 2, 1},
+    {1, 2, 1, 1, 2, 2, 1, -1, -2, 0, 2, 1},
+    {2, 2, 1, 1, 2, 2, 1, -1, -2, 0, 1, 1},
+    {2, 2, 2, 2, 2, 2, 1, -1, -2, 0, 1, 1},
+    {2, 2, 2, 2, 2, 2, 1, -1, -2, 0, 1, 1},
+    {2, 2, 2, 2, 2, 2, 1, -1, -2, 0, 1, 1}, // key 40
+    {3, 2, 2, 2, 2, 2, 1, -1, -2, 0, 0, 1},
+    {3, 2, 2, 2, 2, 2, 1, -1, -2, 0, 0, 1},
+    {3, 2, 2, 2, 2, 2, 1, -1, -2, 0, 0, 1},
+    {3, 2, 2, 2, 2, 2, 1, -1, -1, 0, -1, 1},
+    {3, 2, 2, 2, 2, 2, 1, -1, -1, 0, -1, 1},
+    {3, 2, 2, 2, 2, 2, 1, -1, -1, 1, -1, 1},
+    {3, 1, 2, 2, 2, 2, 1, -1, -1, 1, -2, 1},
+    {3, 1, 2, 2, 2, 2, 1, -1, -1, 1, -2, 1}, // key 48
+    {3, 1, 2, 2, 2, 1, 1, -1, -1, 1, -2, 1},
+    {3, 1, 2, 2, 1, 1, 1, -1, -1, 1, -2, 1},
+    {2, 1, 2, 2, 1, 1, 1, -1, -1, 1, -2, 1},
+    {2, 1, 2, 2, 1, 1, 1, -1, 0, 1, -2, 1},
+    {2, 0, 2, 2, 0, 0, 1, -1, 0, 1, -2, 3},
+    {2, 0, 1, 1, 0, 0, 1, -1, 0, 1, -2, 3},
+    {1, 0, 1, 1, 0, 0, 1, -1, 0, 1, -2, 3},
+    {1, 0, 1, 1, -1, -1, 1, -1, 0, 1, -1, 3}, // key 56
+    {1, 0, 1, 1, -1, -1, 0, 0, 0, 1, -1, 3},
+    {0, -1, 0, 0, -1, -1, 0, 0, 0, 1, -1, 3},
+    {0, -1, 0, 0, -1, -2, 0, 0, 0, 1, 0, 3},
+    {0, -1, 0, 0, -2, -2, 0, 0, 1, 1, 0, 3},
+    {-1, -1, -1, -1, -2, -2, 0, 0, 1, 1, 0, 3},
+    {-1, -1, -1, -1, -2, -2, -1, 1, 1, 1, 1, 3},
+    {-1, -1, -1, -1, -2, -2, -1, 1, 1, 1, 1, 3},
+  },
+  { // 64: EVENT_ACK
+    {1, 0, 1, 1, 1, 1, 1, -1, 1, 1, 1, 0}, // key 00
+    {1, -1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 0},
+    {0, -1, 1, 1, 2, 2, 0, 0, 1, 1, 1, 3},
+    {0, -2, 1, 1, 2, 2, 0, 0, 1, 1, 1, 3},
+    {-1, -2, 2, 2, 2, 2, 0, 0, 1, 2, 2, 3},
+    {-1, -3, 2, 2, 2, 2, -1, 1, 1, 2, 2, 3},
+    {-1, -3, 2, 2, 2, 2, -1, 1, 1, 2, 2, 3},
+    {-2, -4, 2, 2, 2, 2, -1, 1, 1, 3, 2, 3},
+    {-2, -4, 2, 2, 2, 2, -1, 1, 1, 3, 2, 3}, // key 08
+    {-2, -4, 2, 2, 2, 2, -1, 1, 1, 3, 2, 3},
+    {-2, -4, 2, 2, 2, 2, -1, 1, 1, 3, 2, 3},
+    {-2, -4, 2, 2, 2, 2, -2, 2, 1, 3, 2, 3},
+    {-2, -4, 2, 2, 1, 1, -2, 2, 1, 2, 2, 3},
+    {-2, -4, 1, 1, 1, 1, -2, 2, 0, 2, 1, 3},
+    {-2, -3, 1, 1, 0, 0, -2, 2, 0, 2, 1, 3},
+    {-2, -3, 0, 0, 0, 0, -2, 2, 0, 1, 0, 3},
+    {-2, -2, 0, 0, 0, 0, -1, 1, 0, 1, 0, 3}, // key 16
+    {-2, -2, 0, 0, -1, -1, -1, 1, 0, 1, 0, 0},
+    {-2, -2, 0, 0, -1, -1, -1, 1, 0, 1, 0, 0},
+    {-2, -1, 0, 0, -1, -1, -1, 1, 0, 0, 0, 0},
+    {-1, -1, 0, 0, -1, -1, -1, 1, 0, 0, 0, 0},
+    {-1, -1, 0, 0, -1, -1, -1, 1, 0, 0, 0, 0},
+    {-1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // key 24
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {1, 0, 0, 0, 1, 1, 1, -1, 0, 0, 0, 0},
+    {1, 1, 0, 0, 1, 1, 1, -1, 0, 0, 0, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {2, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {2, 1, 1, 1, 2, 2, 1, -1, 1, 0, 1, 0},
+    {2, 1, 1, 1, 2, 2, 1, -1, 1, 0, 1, 1},
+    {2, 1, 1, 1, 2, 2, 2, -2, 1, 0, 1, 1}, // key 32
+    {2, 1, 1, 1, 2, 2, 2, -2, 1, 0, 1, 1},
+    {2, 1, 1, 1, 2, 2, 2, -2, 1, 0, 1, 1},
+    {2, 1, 1, 1, 2, 2, 2, -2, 1, 0, 1, 1},
+    {2, 1, 1, 1, 2, 2, 2, -2, 1, 0, 1, 1},
+    {2, 1, 1, 1, 2, 2, 1, -1, 1, 0, 1, 1},
+    {2, 1, 1, 1, 2, 2, 1, -1, 1, 0, 1, 1},
+    {2, 1, 1, 1, 2, 2, 1, -1, 1, 0, 1, 0},
+    {2, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0}, // key 40
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 0, 0, 1, 1, 1, -1, 0, 0, 0, 0},
+    {1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {-1, 0, 0, 0, -1, -1, 0, 0, 0, 0, 0, 0},
+    {-1, -1, 0, 0, -1, -1, -1, 1, 0, 0, 0, 0}, // key 48
+    {-1, -1, -1, -1, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -1, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -1, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -1, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -1, -1, -2, -2, -2, 2, -1, 0, -1, 0},
+    {-2, -1, -1, -1, -2, -2, -2, 2, -1, 0, -1, 0},
+    {-2, -1, -1, -1, -2, -2, -2, 2, -1, 0, -1, 0}, // key 56
+    {-2, -1, -1, -1, -2, -2, -2, 2, -1, 0, -1, 0},
+    {-2, -1, -1, -1, -2, -2, -2, 2, -1, 0, -1, 0},
+    {-2, -1, -1, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -1, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, 0, 0, -1, -1, -1, 1, 0, 0, 0, 0},
+  },
+  { // 65: EVENT_CONFIRM
+    {0, -1, 1, 1, 1, 1, 0, 0, 0, 1, 1, 0}, // key 00
+    {0, -1, 1, 1, 1, 1, 0, 0, 0, 1, 1, 0},
+    {-1, -1, 1, 1, 1, 1, 0, 0, 0, 1, 1, 3},
+    {-1, -2, 1, 1, 1, 1, -1, 1, 1, 1, 1, 3},
+    {-1, -3, 1, 1, 1, 1, -1, 1, 1, 2, 1, 3},
+    {-2, -3, 2, 2, 2, 2, -1, 1, 1, 2, 2, 3},
+    {-2, -4, 2, 2, 2, 2, -1, 1, 1, 2, 2, 3},
+    {-2, -4, 2, 2, 2, 2, -1, 1, 1, 3, 2, 3},
+    {-2, -4, 2, 2, 2, 2, -1, 1, 1, 3, 2, 3}, // key 08
+    {-2, -4, 2, 2, 2, 2, -2, 2, 1, 3, 2, 3},
+    {-2, -4, 2, 2, 2, 2, -2, 2, 1, 3, 2, 3},
+    {-2, -4, 2, 2, 2, 2, -2, 2, 1, 3, 2, 3},
+    {-2, -4, 2, 2, 1, 1, -2, 2, 1, 2, 2, 3},
+    {-2, -4, 1, 1, 1, 1, -2, 2, 0, 2, 1, 3},
+    {-2, -3, 1, 1, 1, 1, -1, 1, 0, 2, 1, 3},
+    {-2, -3, 1, 1, 0, 0, -1, 1, 0, 1, 1, 3},
+    {-2, -2, 0, 0, 0, 0, -1, 1, 0, 1, 0, 3}, // key 16
+    {-2, -2, 0, 0, 0, 0, -1, 1, 0, 1, 0, 0},
+    {-1, -1, 0, 0, 0, 0, -1, 1, 0, 1, 0, 0},
+    {-1, -1, 0, 0, 0, 0, -1, 1, 0, 0, 0, 0},
+    {-1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {1, 0, 0, 0, 1, 1, 1, -1, 0, 0, 0, 0}, // key 24
+    {1, 1, 0, 0, 1, 1, 1, -1, 0, 0, 0, 0},
+    {2, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {2, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {2, 1, 1, 1, 2, 2, 1, -1, 1, 0, 1, 0},
+    {2, 1, 1, 1, 2, 2, 1, -1, 1, 0, 1, 1},
+    {2, 1, 1, 1, 2, 2, 2, -2, 1, 0, 1, 1},
+    {2, 1, 1, 1, 2, 2, 2, -2, 1, 0, 1, 1},
+    {2, 1, 1, 1, 2, 2, 2, -2, 1, 0, 1, 1}, // key 32
+    {2, 1, 1, 1, 2, 2, 2, -2, 1, 0, 1, 1},
+    {2, 1, 1, 1, 2, 2, 2, -2, 1, 0, 1, 1},
+    {2, 1, 1, 1, 2, 2, 1, -1, 1, 0, 1, 1},
+    {2, 1, 1, 1, 2, 2, 1, -1, 1, 0, 1, 1},
+    {2, 1, 1, 1, 2, 2, 1, -1, 1, 0, 1, 0},
+    {2, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 0, 0, 1, 1, 1, -1, 0, 0, 0, 0}, // key 40
+    {1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {-1, 0, 0, 0, -1, -1, 0, 0, 0, 0, 0, 0},
+    {-1, -1, 0, 0, -1, -1, -1, 1, 0, 0, 0, 0},
+    {-1, -1, -1, -1, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -1, 0, -1, 0}, // key 48
+    {-2, -1, -1, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -1, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -1, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -1, -1, -2, -2, -2, 2, -1, 0, -1, 0},
+    {-2, -1, -1, -1, -2, -2, -2, 2, -1, 0, -1, 0},
+    {-2, -1, -1, -1, -2, -2, -2, 2, -1, 0, -1, 0},
+    {-2, -1, -1, -1, -2, -2, -2, 2, -1, 0, -1, 0},
+    {-2, -1, -1, -1, -2, -2, -2, 2, -1, 0, -1, 0}, // key 56
+    {-2, -1, -1, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -1, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, 0, 0, -1, -1, -1, 1, 0, 0, 0, 0},
+    {-1, 0, 0, 0, -1, -1, -1, 1, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+  },
+  { // 66: EVENT_ERROR
+    {0, -1, 1, 1, 1, 1, 0, 0, 0, 1, 1, 0}, // key 00
+    {0, -1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 0},
+    {1, -1, 1, 1, 2, 2, 0, 0, 1, 1, 1, 3},
+    {1, -1, 2, 2, 3, 3, 1, -1, 1, 1, 2, 3},
+    {1, -1, 2, 2, 4, 4, 1, -1, 2, 2, 2, 3},
+    {2, -1, 3, 3, 4, 4, 1, -1, 2, 2, 3, 3},
+    {2, -1, 3, 3, 5, 5, 1, -1, 2, 2, 3, 3},
+    {2, -1, 4, 4, 5, 5, 1, -1, 3, 3, 4, 3},
+    {2, -2, 4, 4, 6, 6, 1, -1, 3, 3, 4, 3}, // key 08
+    {2, -2, 4, 4, 6, 6, 2, -2, 3, 3, 4, 3},
+    {2, -1, 4, 4, 6, 6, 2, -2, 3, 3, 4, 3},
+    {2, -1, 4, 4, 6, 6, 2, -2, 3, 3, 4, 3},
+    {2, -1, 3, 3, 5, 5, 2, -2, 3, 2, 3, 3},
+    {2, -1, 3, 3, 5, 5, 2, -2, 2, 2, 3, 3},
+    {2, 0, 3, 3, 4, 4, 1, -1, 2, 2, 3, 3},
+    {2, 0, 2, 2, 4, 4, 1, -1, 2, 1, 2, 3},
+    {2, 0, 2, 2, 3, 3, 1, -1, 1, 1, 2, 3}, // key 16
+    {1, 0, 1, 1, 2, 2, 1, -1, 1, 1, 1, 0},
+    {1, 0, 1, 1, 2, 2, 1, -1, 1, 1, 1, 0},
+    {1, 0, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {-1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {-1, -1, 0, 0, -1, -1, -1, 1, 0, 0, 0, 0}, // key 24
+    {-1, -1, 0, 0, -1, -1, -1, 1, -1, 0, 0, 0},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -1, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -1, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -1, -1, -2, -2, -2, 2, -1, 0, -1, 0},
+    {-2, -1, -1, -1, -2, -2, -2, 2, -1, 0, -1, 0},
+    {-2, -2, -1, -1, -2, -2, -2, 2, -1, 0, -1, 0}, // key 32
+    {-2, -1, -1, -1, -2, -2, -2, 2, -1, 0, -1, 0},
+    {-2, -1, -1, -1, -2, -2, -2, 2, -1, 0, -1, 0},
+    {-2, -1, -1, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -1, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, 0, 0, -1, -1, -1, 1, 0, 0, 0, 0}, // key 40
+    {-1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {1, 1, 0, 0, 1, 1, 1, -1, 0, 0, 0, 0},
+    {1, 1, 0, 0, 1, 1, 1, -1, 0, 0, 0, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {2, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0}, // key 48
+    {2, 1, 1, 1, 2, 2, 1, -1, 1, 0, 1, 0},
+    {2, 1, 1, 1, 2, 2, 1, -1, 1, 0, 1, 1},
+    {2, 1, 1, 1, 2, 2, 2, -2, 1, 0, 1, 1},
+    {2, 1, 1, 1, 2, 2, 2, -2, 1, 0, 1, 1},
+    {2, 1, 1, 1, 2, 2, 2, -2, 1, 0, 1, 1},
+    {2, 1, 1, 1, 2, 2, 2, -2, 1, 0, 1, 1},
+    {2, 1, 1, 1, 2, 2, 2, -2, 1, 0, 1, 1},
+    {2, 1, 1, 1, 2, 2, 1, -1, 1, 0, 1, 1}, // key 56
+    {2, 1, 1, 1, 2, 2, 1, -1, 1, 0, 1, 1},
+    {2, 1, 1, 1, 2, 2, 1, -1, 1, 0, 1, 0},
+    {2, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 0, 0, 1, 1, 1, -1, 0, 0, 0, 0},
+    {1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+  },
+  { // 67: EVENT_RETURN
+    {1, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 0}, // key 00
+    {1, 0, 1, 1, 2, 2, 1, -1, 1, 1, 1, 0},
+    {1, 0, 2, 2, 3, 3, 1, -1, 1, 1, 2, 3},
+    {2, 0, 2, 2, 3, 3, 1, -1, 2, 1, 2, 3},
+    {2, -1, 3, 3, 4, 4, 1, -1, 2, 2, 3, 3},
+    {2, -1, 3, 3, 5, 5, 1, -1, 2, 2, 3, 3},
+    {2, -1, 3, 3, 5, 5, 1, -1, 3, 2, 3, 3},
+    {2, -1, 4, 4, 6, 6, 2, -2, 3, 3, 4, 3},
+    {2, -1, 4, 4, 6, 6, 2, -2, 3, 3, 4, 3}, // key 08
+    {2, -2, 4, 4, 6, 6, 2, -2, 3, 3, 4, 3},
+    {2, -1, 4, 4, 6, 6, 2, -2, 3, 3, 4, 3},
+    {2, -1, 4, 4, 6, 6, 1, -1, 3, 3, 4, 3},
+    {2, -1, 3, 3, 5, 5, 1, -1, 3, 2, 3, 3},
+    {2, -1, 3, 3, 4, 4, 1, -1, 2, 2, 3, 3},
+    {2, -1, 2, 2, 4, 4, 1, -1, 2, 2, 2, 3},
+    {1, -1, 2, 2, 3, 3, 1, -1, 2, 1, 2, 3},
+    {1, 0, 2, 2, 2, 2, 1, -1, 1, 1, 2, 3}, // key 16
+    {1, 0, 1, 1, 2, 2, 1, -1, 1, 1, 1, 0},
+    {0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 0},
+    {0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {-1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {-1, -1, 0, 0, -1, -1, -1, 1, 0, 0, 0, 0},
+    {-1, -1, 0, 0, -1, -1, -1, 1, 0, 0, 0, 0},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -1, 0, -1, 0}, // key 24
+    {-2, -1, -1, -1, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -1, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -1, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -1, -1, -2, -2, -2, 2, -1, 0, -1, 0},
+    {-2, -1, -1, -1, -2, -2, -2, 2, -1, 0, -1, 0},
+    {-2, -2, -1, -1, -2, -2, -2, 2, -1, 0, -1, 0},
+    {-2, -1, -1, -1, -2, -2, -2, 2, -1, 0, -1, 0},
+    {-2, -1, -1, -1, -2, -2, -2, 2, -1, 0, -1, 0}, // key 32
+    {-2, -1, -1, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -1, -1, -2, -2, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-2, -1, -1, -1, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, -1, -1, -1, -1, -1, 1, -1, 0, -1, 0},
+    {-1, -1, 0, 0, -1, -1, -1, 1, 0, 0, 0, 0},
+    {-1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // key 40
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {1, 1, 0, 0, 1, 1, 1, -1, 0, 0, 0, 0},
+    {1, 1, 0, 0, 1, 1, 1, -1, 0, 0, 0, 0},
+    {2, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {2, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {2, 1, 1, 1, 2, 2, 1, -1, 1, 0, 1, 0},
+    {2, 1, 1, 1, 2, 2, 1, -1, 1, 0, 1, 1}, // key 48
+    {2, 1, 1, 1, 2, 2, 2, -2, 1, 0, 1, 1},
+    {2, 1, 1, 1, 2, 2, 2, -2, 1, 0, 1, 1},
+    {2, 1, 1, 1, 2, 2, 2, -2, 1, 0, 1, 1},
+    {2, 1, 1, 1, 2, 2, 2, -2, 1, 0, 1, 1},
+    {2, 1, 1, 1, 2, 2, 2, -2, 1, 0, 1, 1},
+    {2, 1, 1, 1, 2, 2, 1, -1, 1, 0, 1, 1},
+    {2, 1, 1, 1, 2, 2, 1, -1, 1, 0, 1, 0},
+    {2, 1, 1, 1, 2, 2, 1, -1, 1, 0, 1, 0}, // key 56
+    {2, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 1, 1, 1, 1, 1, -1, 1, 0, 1, 0},
+    {1, 1, 0, 0, 1, 1, 1, -1, 0, 0, 0, 0},
+    {1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+  },
+};
+// ================= END ROBOT ANIMATION BANK ================================
+
+// =========================== FORWARD DECLARATIONS ============================
+static void setUiState(UiState newState);
+static UiSnapshot getUiSnapshot();
+static const char* uiLabel(UiState state);
+static const char* footerLabel(UiState state, RobotInteraction interaction);
+static uint16_t statusColor(UiState state, RobotInteraction interaction);
+static uint16_t faceColorFor(UiState state, RobotInteraction interaction);
+static uint16_t scale565(uint16_t color, float factor);
+static uint16_t blend565(uint16_t from, uint16_t to, float amount);
+static void drawStaticScreen(UiState state, RobotInteraction interaction);
+static void drawFaceExpression(UiState state, RobotInteraction interaction,
+                               uint32_t interactionElapsedMs,
+                               uint32_t stateElapsedMs, uint32_t nowMs);
+static void drawStartupLogo();
+static void drawCenteredText(const char* text, int16_t y, uint16_t color);
+static void drawSmoothCurve(GFXcanvas16& canvas, float x0, float y0,
+                            float x1, float y1, float x2, float y2,
+                            uint16_t color, uint8_t thickness);
+static void drawThickSegment(GFXcanvas16& canvas, int16_t x0, int16_t y0,
+                             int16_t x1, int16_t y1, uint16_t color,
+                             uint8_t thickness);
+static void drawEye(int16_t cx, int16_t cy, int16_t w, int16_t h,
+                    uint16_t color);
+static void initTFT();
+static void initBLE();
+static void initRobotButtons();
+static void updateRobotInteractions(uint32_t now);
+static bool buttonPressedEdge(ButtonDebouncer& button, uint32_t now);
+static void setRelay(bool turnOn);
+static void forcePumpOff(const char* reason);
+static void updateAnimationDirector(UiState state, RobotInteraction interaction, uint32_t nowMs);
+static RobotPose sampleDirectedPose(uint32_t nowMs);
+static void postRobotEvent(uint8_t eventCode);
+static void setDisplayedClip(uint8_t clipId, uint32_t nowMs);
+static uint8_t selectClipForMode(UiState state, RobotInteraction interaction, uint32_t nowMs);
+// Explicit declarations for helpers using custom types prevent Arduino IDE's
+// automatic prototype generator from moving them ahead of the type definitions.
+static uint32_t nextAnimationRandom();
+static uint16_t clipDuration(uint8_t clipId);
+static PoseKeyframe readPoseKey(uint8_t clipId, uint8_t keyIndex);
+static int16_t maxI16(int16_t a, int16_t b);
+static float poseLerp(float a, float b, float t);
+static RobotPose poseFromKey(const PoseKeyframe& key);
+static RobotPose interpolatePose(const RobotPose& a, const RobotPose& b, float t);
+static RobotPose samplePoseClip(uint8_t clipId, uint32_t nowMs, uint32_t clipStartedAt);
+static uint8_t consumeRobotEvent();
+static uint8_t clipForRobotEvent(uint8_t eventCode);
+static uint32_t eventClipDuration(uint8_t eventCode);
+
+// =========================== ESTADO E TEXTOS =================================
 static void setUiState(UiState newState) {
   portENTER_CRITICAL(&uiMux);
   currentUiState = newState;
@@ -208,424 +4889,901 @@ static UiSnapshot getUiSnapshot() {
 }
 
 static const char* uiLabel(UiState state) {
-  // Texto ASCII para a fonte padrão do Adafruit_GFX (não possui acentos).
   switch (state) {
-    case UI_BOOT:         return "Iniciando Sistema";
-    case UI_WAITING:      return "Aguardando Bluetooth";
-    case UI_CONNECTED:    return "Conexao Estabelecida!";
-    case UI_PUMP_ON:      return "BOMBA LIBERADA";
-    case UI_PUMP_OFF:     return "Bomba Travada";
-    case UI_DISCONNECTED: return "Conexao Perdida";
-    default:              return "Bomba HF28";
+    case UI_BOOT:         return "INICIANDO SISTEMA";
+    case UI_WAITING:      return "AGUARDANDO CONEXAO";
+    case UI_CONNECTED:    return "CONECTADO / PRONTO";
+    case UI_PUMP_ON:      return "BOMBA ATIVA";
+    case UI_PUMP_OFF:     return "STOP";
+    case UI_DISCONNECTED: return "SEM CONEXAO BLE";
+    default:              return "LUBRIFICACAO";
   }
 }
 
-// Paleta fixa para manter a interface consistente e legível.
-static constexpr uint16_t BG_COLOR = 0x0000;          // preto
-static constexpr uint16_t FACE_COLOR = 0x0861;         // azul-marinho
-static constexpr uint16_t PANEL_COLOR = 0x10A3;        // painel azul escuro
-static constexpr uint16_t MUTED_COLOR = 0x7D9F;        // cinza azulado
-static constexpr uint16_t CYAN_COLOR = 0x07FF;
-static constexpr uint16_t GREEN_COLOR = 0x07E8;
-static constexpr uint16_t RED_COLOR = 0xF986;
-static constexpr uint16_t AMBER_COLOR = 0xFD20;
+static const char* footerLabel(UiState state, RobotInteraction interaction) {
+  if (interaction == ROBOT_WAKING) return "EI! EU ESTAVA DORMINDO";
+  if (interaction == ROBOT_ANGRY) return "NAO ME ACORDA! PODE NEM DORMIR MAIS Zz...";
+  if (interaction == ROBOT_SASSY) return "AH, TAVA DEMORANDO, FALA LOGO...";
 
-static uint16_t color565(uint8_t r, uint8_t g, uint8_t b) {
-  return tft.color565(r, g, b);
-}
-
-static uint16_t statusColor(UiState state) {
   switch (state) {
-    case UI_BOOT:         return AMBER_COLOR;
-    case UI_WAITING:      return CYAN_COLOR;
-    case UI_CONNECTED:    return GREEN_COLOR;
-    case UI_PUMP_ON:      return GREEN_COLOR;
-    case UI_PUMP_OFF:     return MUTED_COLOR;
-    case UI_DISCONNECTED: return RED_COLOR;
-    default:              return ST77XX_WHITE;
+    case UI_BOOT:         return "CARREGANDO CONTROLADOR HF-28";
+    case UI_WAITING:      return "MODO REPOUSO  /  Zzz";
+    case UI_CONNECTED:    return "PRONTO PARA A PROXIMA ETAPA";
+    case UI_PUMP_ON:      return "ABASTECENDO  -  BOMBA ATIVA";
+    case UI_PUMP_OFF:     return "STOP  /  SAIDA DESENERGIZADA";
+    case UI_DISCONNECTED: return "BOMBA OFF  /  BUSCANDO SINAL";
+    default:              return "CONTROLADOR HF-28";
   }
 }
 
-static void drawCenteredStatusText(const char* text, int16_t y, uint16_t color) {
+static uint16_t statusColor(UiState state, RobotInteraction interaction) {
+  (void)state;
+  if (interaction == ROBOT_WAKING || interaction == ROBOT_ANGRY) return RED_COLOR;
+  if (interaction == ROBOT_SASSY) return BROWN_COLOR;
+  // Conforme solicitado: conectado, abastecendo e STOP permanecem brancos.
+  return WHITE_COLOR;
+}
+
+static uint16_t faceColorFor(UiState state, RobotInteraction interaction) {
+  return statusColor(state, interaction);
+}
+
+static uint16_t scale565(uint16_t color, float factor) {
+  if (factor < 0.0f) factor = 0.0f;
+  if (factor > 1.0f) factor = 1.0f;
+  const uint8_t r = (color >> 11) & 0x1F;
+  const uint8_t g = (color >> 5) & 0x3F;
+  const uint8_t b = color & 0x1F;
+  const uint16_t rr = static_cast<uint16_t>(r * factor);
+  const uint16_t gg = static_cast<uint16_t>(g * factor);
+  const uint16_t bb = static_cast<uint16_t>(b * factor);
+  return static_cast<uint16_t>((rr << 11) | (gg << 5) | bb);
+}
+
+static uint16_t blend565(uint16_t from, uint16_t to, float amount) {
+  if (amount < 0.0f) amount = 0.0f;
+  if (amount > 1.0f) amount = 1.0f;
+  const int r1 = (from >> 11) & 0x1F;
+  const int g1 = (from >> 5) & 0x3F;
+  const int b1 = from & 0x1F;
+  const int r2 = (to >> 11) & 0x1F;
+  const int g2 = (to >> 5) & 0x3F;
+  const int b2 = to & 0x1F;
+  const int r = r1 + static_cast<int>((r2 - r1) * amount);
+  const int g = g1 + static_cast<int>((g2 - g1) * amount);
+  const int b = b1 + static_cast<int>((b2 - b1) * amount);
+  return static_cast<uint16_t>((r << 11) | (g << 5) | b);
+}
+
+// =========================== BOTÕES =========================================
+static bool buttonPressedEdge(ButtonDebouncer& button, uint32_t now) {
+  const bool raw = digitalRead(button.pin);
+
+  if (!button.initialized) {
+    button.rawState = raw;
+    button.stableState = raw;
+    button.lastChangeAt = now;
+    button.initialized = true;
+    return false;
+  }
+
+  if (raw != button.rawState) {
+    button.rawState = raw;
+    button.lastChangeAt = now;
+  }
+
+  if ((now - button.lastChangeAt) >= BUTTON_DEBOUNCE_MS &&
+      button.stableState != button.rawState) {
+    button.stableState = button.rawState;
+    return button.stableState == LOW;
+  }
+  return false;
+}
+
+static void initRobotButtons() {
+  pinMode(BUTTON_BOOT_PIN, INPUT_PULLUP);
+  // GPIO35 nao tem pull-up interno; a leitura depende do circuito da placa.
+  pinMode(BUTTON_USER_PIN, INPUT);
+  const uint32_t now = millis();
+  bootButton = {BUTTON_BOOT_PIN,
+                static_cast<bool>(digitalRead(BUTTON_BOOT_PIN)),
+                static_cast<bool>(digitalRead(BUTTON_BOOT_PIN)), now, true};
+  userButton = {BUTTON_USER_PIN,
+                static_cast<bool>(digitalRead(BUTTON_USER_PIN)),
+                static_cast<bool>(digitalRead(BUTTON_USER_PIN)), now, true};
+}
+
+static void updateRobotInteractions(uint32_t now) {
+  if (buttonPressedEdge(bootButton, now)) {
+    robotInteraction = ROBOT_WAKING;
+    interactionStartedAt = now;
+    Serial.println("[UI] BOOT: acordando irritado.");
+  } else if (buttonPressedEdge(userButton, now)) {
+    robotInteraction = ROBOT_SASSY;
+    interactionStartedAt = now;
+    Serial.println("[UI] Botao GPIO35: expressao debochada.");
+  }
+
+  const uint32_t elapsed = now - interactionStartedAt;
+  if (robotInteraction == ROBOT_WAKING && elapsed >= WAKE_ANIMATION_MS) {
+    // Os 34 segundos de reclamacao contam depois de terminar o despertar.
+    robotInteraction = ROBOT_ANGRY;
+    interactionStartedAt = now;
+  } else if ((robotInteraction == ROBOT_ANGRY && elapsed >= ANGRY_DURATION_MS) ||
+             (robotInteraction == ROBOT_SASSY && elapsed >= SASSY_DURATION_MS)) {
+    robotInteraction = ROBOT_NORMAL;
+  }
+}
+
+// ====================== RENDER / ANIMACAO DO MASCOTE =========================
+// O rosto usa formas LED solidas, grandes e sem pupilas. A personalidade nasce
+// da deformacao dos olhos, do ritmo e da boca, nao de detalhes humanos.
+static float clamp01(float value) {
+  if (value < 0.0f) return 0.0f;
+  if (value > 1.0f) return 1.0f;
+  return value;
+}
+
+static float easeInOutCubic(float value) {
+  value = clamp01(value);
+  if (value < 0.5f) return 4.0f * value * value * value;
+  const float q = -2.0f * value + 2.0f;
+  return 1.0f - (q * q * q) / 2.0f;
+}
+
+static float easeOutBack(float value) {
+  value = clamp01(value);
+  const float c1 = 1.35f;
+  const float c3 = c1 + 1.0f;
+  const float q = value - 1.0f;
+  return 1.0f + c3 * q * q * q + c1 * q * q;
+}
+
+static float lerpFloat(float from, float to, float amount) {
+  return from + (to - from) * clamp01(amount);
+}
+
+static float loopPulse(uint32_t now, uint32_t periodMs, uint32_t activeMs) {
+  const uint32_t phase = now % periodMs;
+  if (phase >= activeMs) return 0.0f;
+  const float t = static_cast<float>(phase) / static_cast<float>(activeMs);
+  // Um pulso com entrada e saida arredondadas, sem cortes bruscos.
+  return sinf(t * 3.14159265f);
+}
+
+static void drawThickSegment(GFXcanvas16& canvas, int16_t x0, int16_t y0,
+                             int16_t x1, int16_t y1, uint16_t color,
+                             uint8_t thickness) {
+  const int16_t half = static_cast<int16_t>(thickness / 2);
+  for (int16_t offset = -half; offset <= half; ++offset) {
+    canvas.drawLine(x0, y0 + offset, x1, y1 + offset, color);
+  }
+  if (thickness >= 3) {
+    canvas.fillCircle(x0, y0, half, color);
+    canvas.fillCircle(x1, y1, half, color);
+  }
+}
+
+static void drawSmoothCurve(GFXcanvas16& canvas, float x0, float y0,
+                            float x1, float y1, float x2, float y2,
+                            uint16_t color, uint8_t thickness) {
+  float lastX = x0;
+  float lastY = y0;
+  for (uint8_t i = 1; i <= 16; ++i) {
+    const float t = static_cast<float>(i) / 16.0f;
+    const float inv = 1.0f - t;
+    const float x = inv * inv * x0 + 2.0f * inv * t * x1 + t * t * x2;
+    const float y = inv * inv * y0 + 2.0f * inv * t * y1 + t * t * y2;
+    drawThickSegment(canvas, static_cast<int16_t>(lastX), static_cast<int16_t>(lastY),
+                     static_cast<int16_t>(x), static_cast<int16_t>(y), color, thickness);
+    lastX = x;
+    lastY = y;
+  }
+}
+
+static void drawEllipseSolid(int16_t cx, int16_t cy, int16_t w, int16_t h,
+                             uint16_t color, float tilt) {
+  if (w < 2 || h < 2) return;
+  const float rx = static_cast<float>(w) * 0.5f;
+  const float ry = static_cast<float>(h) * 0.5f;
+  const int16_t startX = static_cast<int16_t>(cx - w / 2);
+  const int16_t endX = static_cast<int16_t>(cx + w / 2);
+  for (int16_t x = startX; x <= endX; ++x) {
+    const float nx = static_cast<float>(x - cx) / rx;
+    const float remain = 1.0f - nx * nx;
+    if (remain <= 0.0f) continue;
+    const float halfH = ry * sqrtf(remain);
+    const float centerY = static_cast<float>(cy) + tilt * nx;
+    const int16_t y1 = static_cast<int16_t>(roundf(centerY - halfH));
+    const int16_t y2 = static_cast<int16_t>(roundf(centerY + halfH));
+    faceCanvas.drawFastVLine(x, y1, y2 - y1 + 1, color);
+  }
+}
+
+static void drawEye(int16_t cx, int16_t cy, int16_t w, int16_t h,
+                    uint16_t color) {
+  // Tres camadas discretas de luz; o nucleo permanece totalmente branco/vermelho.
+  if (w < 2 || h < 2) return;
+  drawEllipseSolid(cx, cy, w + 8, h + 8, scale565(color, 0.07f), 0.0f);
+  drawEllipseSolid(cx, cy, w + 4, h + 4, scale565(color, 0.17f), 0.0f);
+  drawEllipseSolid(cx, cy, w, h, color, 0.0f);
+}
+
+static void drawTiltedEye(int16_t cx, int16_t cy, int16_t w, int16_t h,
+                          uint16_t color, float tilt) {
+  if (w < 2 || h < 2) return;
+  drawEllipseSolid(cx, cy, w + 8, h + 8, scale565(color, 0.07f), tilt);
+  drawEllipseSolid(cx, cy, w + 4, h + 4, scale565(color, 0.17f), tilt);
+  drawEllipseSolid(cx, cy, w, h, color, tilt);
+}
+
+static void drawAmbientParticles(uint32_t nowMs, uint16_t color) {
+  // Pontos minimos de profundidade: preservam o visor preto sem poluir o rosto.
+  const uint16_t p0 = scale565(color, 0.13f + 0.05f * sinf(nowMs / 710.0f));
+  const uint16_t p1 = scale565(color, 0.10f + 0.06f * sinf(nowMs / 930.0f + 1.7f));
+  faceCanvas.drawPixel(8, 22, p0);
+  faceCanvas.drawPixel(17, 48, p1);
+  faceCanvas.drawPixel(205, 18, p1);
+  faceCanvas.drawPixel(212, 55, p0);
+  faceCanvas.drawPixel(12, 76, p1);
+  faceCanvas.drawPixel(205, 78, p1);
+  faceCanvas.drawPixel(110, 8, scale565(color, 0.08f));
+}
+
+static void drawSparkle(int16_t cx, int16_t cy, int16_t radius, uint16_t color) {
+  faceCanvas.drawFastVLine(cx, cy - radius, radius * 2 + 1, color);
+  faceCanvas.drawFastHLine(cx - radius, cy, radius * 2 + 1, color);
+  faceCanvas.drawPixel(cx - 1, cy - 1, color);
+  faceCanvas.drawPixel(cx + 1, cy + 1, color);
+}
+
+static void drawOilDrop(int16_t x, int16_t y, uint16_t color, uint8_t size) {
+  if (size < 3) size = 3;
+  faceCanvas.fillCircle(x, y + size / 3, size / 2, color);
+  faceCanvas.fillTriangle(x - size / 2, y + size / 3,
+                          x + size / 2, y + size / 3,
+                          x, y - size / 2, color);
+}
+
+// ====================== ANIMATION DIRECTOR / CLIP SAMPLER ===================
+// Events are posted by BLE callbacks and consumed by loop(); callbacks never
+// draw to TFT and never block on rendering.
+enum RobotEventCode : uint8_t {
+  ROBOT_EVENT_NONE = 0,
+  ROBOT_EVENT_LINK_UP = 1,
+  ROBOT_EVENT_PUMP_START = 2,
+  ROBOT_EVENT_PUMP_STOP = 3,
+  ROBOT_EVENT_LINK_LOSS = 4,
+  ROBOT_EVENT_AUTH_ERROR = 5
+};
+
+static uint32_t nextAnimationRandom() {
+  uint32_t x = poseRandomState;
+  x ^= x << 13;
+  x ^= x >> 17;
+  x ^= x << 5;
+  if (x == 0) x = 0xA57B07UL;
+  poseRandomState = x;
+  return x;
+}
+
+static uint16_t clipDuration(uint8_t clipId) {
+  if (clipId >= ROBOT_CLIP_COUNT) clipId = CLIP_SLEEP_BREATH;
+  return pgm_read_word(&kPoseClipDurationMs[clipId]);
+}
+
+static PoseKeyframe readPoseKey(uint8_t clipId, uint8_t keyIndex) {
+  PoseKeyframe key{};
+  if (clipId >= ROBOT_CLIP_COUNT) clipId = CLIP_SLEEP_BREATH;
+  if (keyIndex >= POSE_KEY_COUNT) keyIndex = POSE_KEY_COUNT - 1;
+  memcpy_P(&key, &kRobotAnimationBank[clipId][keyIndex], sizeof(PoseKeyframe));
+  return key;
+}
+
+static int16_t maxI16(int16_t a, int16_t b) {
+  return (a > b) ? a : b;
+}
+
+static float poseLerp(float a, float b, float t) {
+  if (t < 0.0f) t = 0.0f;
+  if (t > 1.0f) t = 1.0f;
+  return a + (b - a) * t;
+}
+
+static RobotPose poseFromKey(const PoseKeyframe& k) {
+  RobotPose p;
+  p.driftX = k.driftX;
+  p.driftY = k.driftY;
+  p.eyeWidthL = k.eyeWidthL;
+  p.eyeWidthR = k.eyeWidthR;
+  p.eyeHeightL = k.eyeHeightL;
+  p.eyeHeightR = k.eyeHeightR;
+  p.eyeTiltL = k.eyeTiltL;
+  p.eyeTiltR = k.eyeTiltR;
+  p.mouthLift = k.mouthLift;
+  p.mouthOpen = k.mouthOpen;
+  p.verticalSquash = k.verticalSquash;
+  p.sparkle = k.sparkle;
+  return p;
+}
+
+static RobotPose interpolatePose(const RobotPose& a, const RobotPose& b, float t) {
+  RobotPose p;
+  p.driftX = poseLerp(a.driftX, b.driftX, t);
+  p.driftY = poseLerp(a.driftY, b.driftY, t);
+  p.eyeWidthL = poseLerp(a.eyeWidthL, b.eyeWidthL, t);
+  p.eyeWidthR = poseLerp(a.eyeWidthR, b.eyeWidthR, t);
+  p.eyeHeightL = poseLerp(a.eyeHeightL, b.eyeHeightL, t);
+  p.eyeHeightR = poseLerp(a.eyeHeightR, b.eyeHeightR, t);
+  p.eyeTiltL = poseLerp(a.eyeTiltL, b.eyeTiltL, t);
+  p.eyeTiltR = poseLerp(a.eyeTiltR, b.eyeTiltR, t);
+  p.mouthLift = poseLerp(a.mouthLift, b.mouthLift, t);
+  p.mouthOpen = poseLerp(a.mouthOpen, b.mouthOpen, t);
+  p.verticalSquash = poseLerp(a.verticalSquash, b.verticalSquash, t);
+  p.sparkle = poseLerp(a.sparkle, b.sparkle, t);
+  return p;
+}
+
+static RobotPose samplePoseClip(uint8_t clipId, uint32_t nowMs, uint32_t clipStartedAt) {
+  if (clipId >= ROBOT_CLIP_COUNT) clipId = CLIP_SLEEP_BREATH;
+  const uint16_t duration = clipDuration(clipId);
+  const uint32_t elapsedMs = nowMs - clipStartedAt;
+  const uint32_t phaseMs = duration == 0 ? 0 : elapsedMs % duration;
+  const float framePosition = (static_cast<float>(phaseMs) *
+      static_cast<float>(POSE_KEY_COUNT)) / static_cast<float>(duration);
+  uint8_t first = static_cast<uint8_t>(framePosition);
+  if (first >= POSE_KEY_COUNT) first = 0;
+  const uint8_t second = static_cast<uint8_t>((first + 1U) % POSE_KEY_COUNT);
+  const float amount = framePosition - floorf(framePosition);
+  const PoseKeyframe keyA = readPoseKey(clipId, first);
+  const PoseKeyframe keyB = readPoseKey(clipId, second);
+  return interpolatePose(poseFromKey(keyA), poseFromKey(keyB), amount);
+}
+
+static void setDisplayedClip(uint8_t clipId, uint32_t nowMs) {
+  if (clipId >= ROBOT_CLIP_COUNT) clipId = CLIP_SLEEP_BREATH;
+  if (activePoseClip == clipId) return;
+  previousPoseClip = activePoseClip;
+  previousPoseClipStartedAt = activePoseClipStartedAt;
+  activePoseClip = clipId;
+  activePoseClipStartedAt = nowMs;
+  poseClipTransitionAt = nowMs;
+}
+
+static uint8_t selectClipForMode(UiState state, RobotInteraction interaction, uint32_t nowMs) {
+  (void)nowMs;
+  uint8_t first = 0;
+  uint8_t count = 8;
+
+  if (splashActive || state == UI_BOOT) {
+    first = CLIP_INTRO_ORBIT;
+    count = 8;
+  } else if (interaction == ROBOT_WAKING) {
+    first = CLIP_WAKE_ANTICIPATE;
+    count = 2;
+  } else if (interaction == ROBOT_ANGRY) {
+    first = CLIP_ANGRY_FROWN;
+    count = 4;
+  } else if (interaction == ROBOT_SASSY) {
+    first = CLIP_SASSY_SIDE_EYE;
+    count = 6;
+  } else {
+    switch (state) {
+      case UI_WAITING:     first = CLIP_SLEEP_BREATH; count = 8; break;
+      case UI_CONNECTED:   first = CLIP_CONNECTED_IDLE; count = 12; break;
+      case UI_PUMP_ON:     first = CLIP_PUMP_RHYTHM; count = 12; break;
+      case UI_PUMP_OFF:    first = CLIP_STOP_IMPACT; count = 4; break;
+      case UI_DISCONNECTED:first = CLIP_LINK_LOST_SURPRISE; count = 8; break;
+      case UI_BOOT:        first = CLIP_INTRO_ORBIT; count = 8; break;
+      default:             first = CLIP_SLEEP_BREATH; count = 8; break;
+    }
+  }
+
+  uint8_t selected = static_cast<uint8_t>(first + (nextAnimationRandom() % count));
+  if (selected == basePoseClip && count > 1) {
+    selected = static_cast<uint8_t>(first + ((selected - first + 1U) % count));
+  }
+  return selected;
+}
+
+static void postRobotEvent(uint8_t eventCode) {
+  if (eventCode > ROBOT_EVENT_AUTH_ERROR) eventCode = ROBOT_EVENT_NONE;
+  portENTER_CRITICAL(&animationMux);
+  pendingRobotEvent = eventCode;
+  portEXIT_CRITICAL(&animationMux);
+}
+
+static uint8_t consumeRobotEvent() {
+  portENTER_CRITICAL(&animationMux);
+  const uint8_t eventCode = pendingRobotEvent;
+  pendingRobotEvent = ROBOT_EVENT_NONE;
+  portEXIT_CRITICAL(&animationMux);
+  return eventCode;
+}
+
+static uint8_t clipForRobotEvent(uint8_t eventCode) {
+  switch (eventCode) {
+    case ROBOT_EVENT_LINK_UP:    return CLIP_EVENT_ACK;
+    case ROBOT_EVENT_PUMP_START: return CLIP_EVENT_CONFIRM;
+    case ROBOT_EVENT_PUMP_STOP:  return CLIP_EVENT_RETURN;
+    case ROBOT_EVENT_LINK_LOSS:  return CLIP_EVENT_ERROR;
+    case ROBOT_EVENT_AUTH_ERROR: return CLIP_EVENT_ERROR;
+    default:                    return 255;
+  }
+}
+
+static uint32_t eventClipDuration(uint8_t eventCode) {
+  switch (eventCode) {
+    case ROBOT_EVENT_LINK_UP:    return 820;
+    case ROBOT_EVENT_PUMP_START: return 980;
+    case ROBOT_EVENT_PUMP_STOP:  return 720;
+    case ROBOT_EVENT_LINK_LOSS:  return 1040;
+    case ROBOT_EVENT_AUTH_ERROR: return 1180;
+    default:                    return 0;
+  }
+}
+
+static void updateAnimationDirector(UiState state, RobotInteraction interaction, uint32_t nowMs) {
+  const bool splashNow = splashActive;
+  const bool modeChanged = !poseDirectorInitialized || state != lastDirectorUiState ||
+      interaction != lastDirectorInteraction || splashNow != lastDirectorSplashState;
+
+  if (!poseDirectorInitialized) {
+    poseRandomState ^= static_cast<uint32_t>(ESP.getEfuseMac());
+    if (poseRandomState == 0) poseRandomState = 0xA57B07UL;
+    activePoseClip = selectClipForMode(state, interaction, nowMs);
+    previousPoseClip = activePoseClip;
+    activePoseClipStartedAt = nowMs;
+    previousPoseClipStartedAt = nowMs;
+    basePoseClip = activePoseClip;
+    poseClipTransitionAt = nowMs;
+    nextPoseClipAt = nowMs + 3500U;
+    activePoseHoldUntil = nextPoseClipAt;
+    lastDirectorUiState = state;
+    lastDirectorInteraction = interaction;
+    lastDirectorSplashState = splashNow;
+    poseDirectorInitialized = true;
+  } else if (modeChanged) {
+    lastDirectorUiState = state;
+    lastDirectorInteraction = interaction;
+    lastDirectorSplashState = splashNow;
+    basePoseClip = selectClipForMode(state, interaction, nowMs);
+    if (!eventClipPlaying) setDisplayedClip(basePoseClip, nowMs);
+    const uint32_t hold = 2800U + (nextAnimationRandom() % 3200U);
+    nextPoseClipAt = nowMs + hold;
+    activePoseHoldUntil = nextPoseClipAt;
+  }
+
+  const uint8_t eventCode = consumeRobotEvent();
+  if (eventCode != ROBOT_EVENT_NONE) {
+    const uint8_t eventClip = clipForRobotEvent(eventCode);
+    if (eventClip < ROBOT_CLIP_COUNT) {
+      activeEventClip = eventClip;
+      eventClipPlaying = true;
+      activeEventUntil = nowMs + eventClipDuration(eventCode);
+      setDisplayedClip(eventClip, nowMs);
+    }
+  }
+
+  if (eventClipPlaying && static_cast<int32_t>(nowMs - activeEventUntil) >= 0) {
+    eventClipPlaying = false;
+    activeEventClip = 255;
+    basePoseClip = selectClipForMode(state, interaction, nowMs);
+    setDisplayedClip(basePoseClip, nowMs);
+    nextPoseClipAt = nowMs + 3200U + (nextAnimationRandom() % 2700U);
+  }
+
+  if (!eventClipPlaying && static_cast<int32_t>(nowMs - nextPoseClipAt) >= 0) {
+    basePoseClip = selectClipForMode(state, interaction, nowMs);
+    setDisplayedClip(basePoseClip, nowMs);
+    nextPoseClipAt = nowMs + 3200U + (nextAnimationRandom() % 4300U);
+    activePoseHoldUntil = nextPoseClipAt;
+  }
+}
+
+static RobotPose sampleDirectedPose(uint32_t nowMs) {
+  const RobotPose current = samplePoseClip(activePoseClip, nowMs, activePoseClipStartedAt);
+  if (activePoseClip == previousPoseClip) return current;
+  const uint32_t elapsed = nowMs - poseClipTransitionAt;
+  const float linear = clamp01(static_cast<float>(elapsed) / 420.0f);
+  const float eased = easeInOutCubic(linear);
+  if (linear >= 1.0f) {
+    previousPoseClip = activePoseClip;
+    previousPoseClipStartedAt = activePoseClipStartedAt;
+    return current;
+  }
+  const RobotPose previous = samplePoseClip(previousPoseClip, nowMs, previousPoseClipStartedAt);
+  return interpolatePose(previous, current, eased);
+}
+// ==================== END ANIMATION DIRECTOR / CLIP SAMPLER ==================
+
+static void drawThumbsUp(int16_t x, int16_t y, uint16_t color) {
+  // Icone reduzido e arredondado; fica no canto, sem competir com os olhos.
+  faceCanvas.fillRoundRect(x + 5, y + 10, 10, 15, 4, color);
+  faceCanvas.fillRoundRect(x + 10, y + 2, 7, 13, 3, color);
+  faceCanvas.fillRoundRect(x + 14, y + 4, 8, 6, 3, color);
+  faceCanvas.fillRoundRect(x + 14, y + 10, 8, 4, 2, color);
+  faceCanvas.fillRoundRect(x + 14, y + 15, 7, 4, 2, color);
+  faceCanvas.fillRoundRect(x + 14, y + 20, 6, 3, 2, color);
+}
+
+static void drawCenteredText(const char* text, int16_t y, uint16_t color) {
   tft.setTextWrap(false);
-
+  tft.setTextSize(1);
   int16_t x1 = 0, y1 = 0;
   uint16_t w = 0, h = 0;
-  uint8_t size = 2;
-  tft.setTextSize(size);
   tft.getTextBounds(text, 0, y, &x1, &y1, &w, &h);
-
-  // Evita cortar os textos longos como "AGUARDANDO BLUETOOTH".
-  if (w > 190) {
-    size = 1;
-    tft.setTextSize(size);
-    tft.getTextBounds(text, 0, y, &x1, &y1, &w, &h);
-  }
-
   int16_t x = (static_cast<int16_t>(tft.width()) - static_cast<int16_t>(w)) / 2;
   if (x < 0) x = 0;
-  tft.setTextColor(color, PANEL_COLOR);
+  tft.setTextColor(color, BG_COLOR);
   tft.setCursor(x, y);
   tft.print(text);
 }
 
-// Desenha apenas a área do rosto. Não limpa nem redesenha o ecrã inteiro.
+static void drawStaticScreen(UiState state, RobotInteraction interaction) {
+  if (!tftReady) return;
+  tft.fillScreen(BG_COLOR);
+  tft.setTextWrap(false);
+  tft.setTextSize(1);
+
+  const uint16_t accent = statusColor(state, interaction);
+  tft.setTextColor(accent, BG_COLOR);
+  tft.setCursor(8, 5);
+  tft.print(uiLabel(state));
+
+  // Identificador discreto, mantido fora da area de expressao.
+  tft.setTextColor(scale565(WHITE_COLOR, 0.58f), BG_COLOR);
+  tft.setCursor(191, 5);
+  tft.print("HF-28");
+  tft.drawFastHLine(8, 16, 224, scale565(accent, 0.17f));
+
+  const char* footer = footerLabel(state, interaction);
+  const uint16_t footerColor = (interaction == ROBOT_NORMAL)
+      ? scale565(WHITE_COLOR, 0.78f) : accent;
+  drawCenteredText(footer, 119, footerColor);
+  tft.drawFastHLine(58, 112, 124, scale565(accent, 0.13f));
+}
+
 static void drawFaceExpression(UiState state, RobotInteraction interaction,
-                               uint32_t elapsedMs, uint32_t nowMs) {
+                               uint32_t interactionElapsedMs,
+                               uint32_t stateElapsedMs, uint32_t nowMs) {
   if (!tftReady || faceCanvas.getBuffer() == nullptr) return;
+  const uint16_t accent = faceColorCurrent;
+  const RobotPose pose = sampleDirectedPose(nowMs);
+  faceCanvas.fillScreen(BG_COLOR);
+  drawAmbientParticles(nowMs, accent);
 
-  const uint16_t accent = statusColor(state);
-  const bool waitingBlink = (nowMs % 4700U) < 150U;
-  const bool normalBlink = (nowMs % 3900U) < 150U;
+  // Respiracao e movimento de flutuacao lentos, sempre deterministas e sem delay.
+  const float breath = sinf(static_cast<float>(nowMs) / 1180.0f);
+  const float floatWave = sinf(static_cast<float>(nowMs) / 1840.0f);
+  const float microWave = sinf(static_cast<float>(nowMs) / 2710.0f);
+  const int16_t bob = static_cast<int16_t>(roundf(floatWave * 1.6f + pose.verticalSquash * 0.35f));
+  const int16_t drift = static_cast<int16_t>(roundf(microWave * 1.2f));
+  const int16_t leftCx = 61 + drift + static_cast<int16_t>(roundf(pose.driftX));
+  const int16_t rightCx = 159 + drift + static_cast<int16_t>(roundf(pose.driftX));
+  const int16_t eyeCy = 34 + bob + static_cast<int16_t>(roundf(pose.driftY));
 
-  // Coordenadas locais do canvas (0,0 corresponde ao pixel TFT 29,27).
-  const int16_t leftEye = 51;
-  const int16_t rightEye = 131;
-  const int16_t eyeY = 24;
+  // Piscar com duracao mais organica (fechar rapido, segurar um instante, abrir).
+  const uint32_t blinkPhase = nowMs % 5870U;
+  float blink = 0.0f;
+  if (blinkPhase < 190U) {
+    if (blinkPhase < 66U) blink = static_cast<float>(blinkPhase) / 66.0f;
+    else if (blinkPhase < 104U) blink = 1.0f;
+    else blink = static_cast<float>(190U - blinkPhase) / 86.0f;
+  }
+  blink = clamp01(blink);
+  const float wink = loopPulse(nowMs + 1100U, 12700U, 270U);
 
-  // A composição ocorre toda em RAM; o TFT não é apagado durante o desenho.
-  faceCanvas.fillScreen(FACE_COLOR);
-  faceCanvas.drawPixel(14, 16, accent);
-  faceCanvas.drawPixel(168, 16, accent);
+  const float enter = easeInOutCubic(faceMorphProgress);
+  const float idleBreath = 1.0f + 0.035f * breath;
+  const int16_t pulseWidth = static_cast<int16_t>(roundf(1.6f * microWave + pose.verticalSquash * 0.18f));
 
-  if (interaction == ROBOT_ANGRY) {
-    // BRAVO: sobrancelhas inclinadas para dentro, olhos estreitos vermelhos,
-    // pupilas firmes, dentes serrilhados e vapor que pulsa nas laterais.
-    const uint8_t phase = static_cast<uint8_t>((nowMs / 115U) % 6U);
-    const int16_t shake = (phase == 1 || phase == 4) ? 2 : 0;
-    const uint16_t hot = (phase % 2U) ? color565(255, 55, 36) : RED_COLOR;
+  if (interaction == ROBOT_WAKING) {
+    // Anticipacao: primeiro uma pequena vibracao, depois olhos abrem com overshoot.
+    const float wakeT = clamp01(static_cast<float>(interactionElapsedMs) /
+                                static_cast<float>(WAKE_ANIMATION_MS));
+    const float opening = clamp01(easeOutBack(wakeT));
+    const float shiver = (wakeT < 0.28f)
+        ? sinf(static_cast<float>(nowMs) / 28.0f) * (1.0f - wakeT / 0.28f) * 1.6f
+        : 0.0f;
+    const int16_t h = static_cast<int16_t>(lerpFloat(5.0f, 53.0f, opening));
+    const int16_t w = static_cast<int16_t>(lerpFloat(44.0f, 70.0f, opening));
+    drawTiltedEye(leftCx + static_cast<int16_t>(shiver), eyeCy,
+                  maxI16(2, w + static_cast<int16_t>(pose.eyeWidthL)),
+                  maxI16(2, h + static_cast<int16_t>(pose.eyeHeightL)), accent,
+                  2.0f + pose.eyeTiltL);
+    drawTiltedEye(rightCx - static_cast<int16_t>(shiver), eyeCy,
+                  maxI16(2, w + static_cast<int16_t>(pose.eyeWidthR)),
+                  maxI16(2, h + static_cast<int16_t>(pose.eyeHeightR)), accent,
+                  -2.0f + pose.eyeTiltR);
+    // Boca O compacta: surpresa irritada antes da expressao se comprimir.
+    const int16_t mouthW = static_cast<int16_t>(lerpFloat(4.0f, 17.0f, opening));
+    const int16_t mouthH = static_cast<int16_t>(lerpFloat(3.0f, 10.0f, opening));
+    faceCanvas.fillRoundRect(110 - mouthW / 2, 68 - mouthH / 2,
+                             mouthW, mouthH, mouthH / 2, accent);
 
-    faceCanvas.fillTriangle(24 + shake, 6, 71, 15, 68, 21, hot);
-    faceCanvas.fillTriangle(158 - shake, 6, 111, 15, 114, 21, hot);
+  } else if (interaction == ROBOT_ANGRY) {
+    // Raiva robotica: vermelho puro, olhos mais baixos e inclinacao para o centro.
+    const float agitated = sinf(static_cast<float>(nowMs) / 145.0f) * 1.0f;
+    const int16_t targetEyeH = 31 + static_cast<int16_t>(roundf(2.0f * breath));
+    const int16_t eyeH = static_cast<int16_t>(lerpFloat(7.0f, targetEyeH, enter));
+    const int16_t eyeW = static_cast<int16_t>(lerpFloat(47.0f, 73.0f + pulseWidth, enter));
+    drawTiltedEye(leftCx, eyeCy + 3 + static_cast<int16_t>(agitated),
+                  maxI16(2, eyeW + static_cast<int16_t>(pose.eyeWidthL)),
+                  maxI16(2, eyeH + static_cast<int16_t>(pose.eyeHeightL)), accent,
+                  6.0f + pose.eyeTiltL);
+    drawTiltedEye(rightCx, eyeCy + 3 - static_cast<int16_t>(agitated),
+                  maxI16(2, eyeW + static_cast<int16_t>(pose.eyeWidthR)),
+                  maxI16(2, eyeH + static_cast<int16_t>(pose.eyeHeightR)), accent,
+                  -6.0f + pose.eyeTiltR);
+    // Boca contraria ao sorriso: curva firme, sem sobrancelhas desenhadas.
+    drawSmoothCurve(faceCanvas, 91, 68, 110, 62 + breath, 129, 68, accent, 4);
+    if ((nowMs % 1250U) < 105U) {
+      drawSparkle(15, 37, 3, scale565(accent, 0.72f));
+      drawSparkle(204, 37, 3, scale565(accent, 0.72f));
+    }
 
-    faceCanvas.fillRoundRect(leftEye - 21 + shake, 17, 42, 19, 6, hot);
-    faceCanvas.fillRoundRect(rightEye - 21 - shake, 17, 42, 19, 6, hot);
-    faceCanvas.fillRoundRect(leftEye - 15 + shake, 21, 30, 10, 4, BG_COLOR);
-    faceCanvas.fillRoundRect(rightEye - 15 - shake, 21, 30, 10, 4, BG_COLOR);
-    faceCanvas.fillCircle(leftEye + 4 + shake, 25, 5, color565(255, 185, 70));
-    faceCanvas.fillCircle(rightEye - 4 - shake, 25, 5, color565(255, 185, 70));
-    faceCanvas.fillCircle(leftEye + 4 + shake, 25, 2, BG_COLOR);
-    faceCanvas.fillCircle(rightEye - 4 - shake, 25, 2, BG_COLOR);
+  } else if (interaction == ROBOT_SASSY) {
+    // Deboche marrom: assimetria sutil nos olhos e sorriso de canto.
+    const int16_t leftTargetH = 35 + static_cast<int16_t>(roundf(2.0f * breath));
+    const int16_t rightTargetH = 42 + static_cast<int16_t>(roundf(2.0f * breath));
+    const int16_t leftH = static_cast<int16_t>(lerpFloat(7.0f, leftTargetH, enter));
+    const int16_t rightH = static_cast<int16_t>(lerpFloat(7.0f, rightTargetH, enter));
+    const int16_t sassyW = static_cast<int16_t>(lerpFloat(46.0f, 69.0f + pulseWidth, enter));
+    drawEye(leftCx, eyeCy + 5,
+            maxI16(2, sassyW + static_cast<int16_t>(pose.eyeWidthL)),
+            maxI16(2, leftH + static_cast<int16_t>(pose.eyeHeightL)), accent);
+    drawEye(rightCx, eyeCy + 2,
+            maxI16(2, sassyW + static_cast<int16_t>(pose.eyeWidthR)),
+            maxI16(2, rightH + static_cast<int16_t>(pose.eyeHeightR)), accent);
+    // Pequena pálpebra escura que transforma a expressao sem criar pupilas.
+    faceCanvas.fillTriangle(30, 15, 91, 15, 91, 26, BG_COLOR);
+    faceCanvas.fillTriangle(129, 15, 190, 15, 129, 26, BG_COLOR);
+    drawSmoothCurve(faceCanvas, 96, 67, 115, 61, 133, 64, accent, 4);
+    faceCanvas.fillCircle(136, 64, 2, accent);
 
-    // Boca irritada com dentes alternando entre cerrados e rosnado.
-    if ((phase % 3U) == 0U) {
-      faceCanvas.fillRoundRect(75, 43, 32, 11, 3, hot);
-      faceCanvas.fillTriangle(78, 43, 85, 43, 82, 48, ST77XX_WHITE);
-      faceCanvas.fillTriangle(88, 43, 95, 43, 91, 48, ST77XX_WHITE);
-      faceCanvas.fillTriangle(99, 43, 105, 43, 102, 48, ST77XX_WHITE);
+  } else if (state == UI_WAITING || state == UI_BOOT) {
+    // Repouso: curvas fechadas, boca minima e Zs que sobem em ciclo.
+    const float sleepBreath = breath * 1.5f;
+    const int16_t sink = static_cast<int16_t>(roundf(1.2f + sleepBreath));
+    const float lidDepth = lerpFloat(1.0f, 19.0f, enter);
+    const float leftLid = max(1.0f, lidDepth + pose.eyeHeightL * 0.35f);
+    const float rightLid = max(1.0f, lidDepth + pose.eyeHeightR * 0.35f);
+    const int16_t lidThickness = static_cast<int16_t>(3 + roundf(enter * 1.0f));
+    drawSmoothCurve(faceCanvas, 23, 25 + sink, 61 + pose.eyeTiltL, 25 + sink + leftLid,
+                    99, 25 + sink, accent, static_cast<uint8_t>(lidThickness));
+    drawSmoothCurve(faceCanvas, 121, 25 + sink, 159 + pose.eyeTiltR, 25 + sink + rightLid,
+                    197, 25 + sink, accent, static_cast<uint8_t>(lidThickness));
+    faceCanvas.fillRoundRect(105, 67 + static_cast<int16_t>(pose.mouthLift * 0.3f),
+                             10 + static_cast<int16_t>(max(0.0f, pose.mouthOpen)), 3, 1, accent);
+
+    // Tres Z independentes, deslocando para cima e desaparecendo suavemente.
+    for (uint8_t i = 0; i < 3; ++i) {
+      const uint32_t phase = (nowMs / 21U + i * 28U) % 100U;
+      const int16_t rise = static_cast<int16_t>(phase / 5U);
+      const int16_t x = 105 + static_cast<int16_t>(i * 8U) - rise / 12;
+      const int16_t y = 61 - rise;
+      const float fade = 0.18f + 0.65f * (1.0f - static_cast<float>(phase) / 100.0f);
+      const uint16_t zColor = scale565(accent, fade);
+      faceCanvas.setTextWrap(false);
+      faceCanvas.setTextSize(1);
+      faceCanvas.setTextColor(zColor);
+      faceCanvas.setCursor(x, y);
+      faceCanvas.print('z');
+    }
+    // Uma bolha discreta substitui uma boca humana.
+    faceCanvas.drawRoundRect(106, 72, 8, 4, 2, scale565(accent, 0.82f));
+
+  } else if (state == UI_CONNECTED) {
+    // Conectado: olhos abertos, alto brilho e sorriso; um pequeno pulinho ao conectar.
+    const float arrival = (stateElapsedMs < 800U)
+        ? sinf((static_cast<float>(stateElapsedMs) / 800.0f) * 3.14159265f) : 0.0f;
+    const int16_t hop = static_cast<int16_t>(roundf(-4.0f * arrival));
+    int16_t h = static_cast<int16_t>(roundf((52.0f + 2.0f * breath) * idleBreath));
+    h = static_cast<int16_t>(lerpFloat(7.0f, static_cast<float>(h), enter));
+    h = static_cast<int16_t>(lerpFloat(static_cast<float>(h), 5.0f, blink));
+    const int16_t leftBlinkH = static_cast<int16_t>(lerpFloat(h + pose.eyeHeightL, 5.0f, wink));
+    drawEye(leftCx, eyeCy + hop,
+            maxI16(2, 68 + pulseWidth + static_cast<int16_t>(pose.eyeWidthL)),
+            maxI16(2, leftBlinkH), accent);
+    drawEye(rightCx, eyeCy + hop,
+            maxI16(2, 68 + pulseWidth + static_cast<int16_t>(pose.eyeWidthR)),
+            maxI16(2, h + static_cast<int16_t>(pose.eyeHeightR)), accent);
+    drawSmoothCurve(faceCanvas, 85, 63 + hop, 110 + pose.eyeTiltL,
+                    77 + hop + static_cast<int16_t>(pose.mouthLift),
+                    135, 63 + hop, accent,
+                    static_cast<uint8_t>(max(2.0f, 5.0f + pose.mouthOpen * 0.25f)));
+    if (stateElapsedMs < 900U) {
+      const float pop = loopPulse(stateElapsedMs, 900U, 620U);
+      drawSparkle(20, 54, static_cast<int16_t>(2 + 2 * pop),
+                  scale565(accent, 0.35f + 0.55f * pop));
+      drawSparkle(200, 52, static_cast<int16_t>(2 + 2 * pop),
+                  scale565(accent, 0.35f + 0.55f * pop));
+    }
+
+  } else if (state == UI_PUMP_ON) {
+    // Abastecendo: sorriso mais cheio, olho com pulsacao macia e gesto de joia.
+    const float beat = sinf(static_cast<float>(nowMs) / 510.0f);
+    const float happyBlink = loopPulse(nowMs + 800U, 4300U, 220U);
+    const float pumpBounce = (stateElapsedMs < 900U)
+        ? 1.0f - easeInOutCubic(static_cast<float>(stateElapsedMs) / 900.0f) : 0.0f;
+    const int16_t hop = static_cast<int16_t>(roundf(-4.0f * pumpBounce));
+    int16_t h = static_cast<int16_t>(roundf(54.0f + 2.0f * beat));
+    h = static_cast<int16_t>(lerpFloat(h, 6.0f, (blink > happyBlink ? blink : happyBlink)));
+    h = static_cast<int16_t>(lerpFloat(7.0f, h, enter));
+    const int16_t w = static_cast<int16_t>(lerpFloat(46.0f,
+        71.0f + roundf(2.0f * microWave), enter));
+    drawEye(leftCx, eyeCy - 1 + hop,
+            maxI16(2, w + static_cast<int16_t>(pose.eyeWidthL)),
+            maxI16(2, h + static_cast<int16_t>(pose.eyeHeightL)), accent);
+    drawEye(rightCx, eyeCy - 1 + hop,
+            maxI16(2, w + static_cast<int16_t>(pose.eyeWidthR)),
+            maxI16(2, h + static_cast<int16_t>(pose.eyeHeightR)), accent);
+
+    if (stateElapsedMs < 1700U && stateElapsedMs > 120U) {
+      const float celebration = loopPulse(stateElapsedMs, 850U, 640U);
+      const int16_t sparkleSize = static_cast<int16_t>(2 + 2 * celebration);
+      drawSparkle(18, 42, sparkleSize, scale565(accent, 0.40f + 0.55f * celebration));
+      drawSparkle(202, 41, sparkleSize, scale565(accent, 0.40f + 0.55f * celebration));
     } else {
-      faceCanvas.drawLine(77, 46, 86, 50, hot);
-      faceCanvas.drawLine(86, 50, 96, 47, hot);
-      faceCanvas.drawLine(96, 47, 105, 50, hot);
+      const int16_t lift = static_cast<int16_t>(roundf(sinf(nowMs / 610.0f) * 1.2f));
+      drawOilDrop(19, 46 - lift, scale565(accent, 0.78f), 7);
+      drawOilDrop(201, 48 + lift, scale565(accent, 0.78f), 7);
     }
 
-    // Marcas de raiva e vapor em movimento; sem escrever diretamente em pixels soltos no TFT.
-    faceCanvas.drawLine(18, 22, 25, 17, hot);
-    faceCanvas.drawLine(20, 27, 27, 23, hot);
-    faceCanvas.drawLine(157, 17, 164, 22, hot);
-    faceCanvas.drawLine(155, 23, 162, 27, hot);
-    if ((phase % 2U) == 0U) {
-      faceCanvas.drawCircle(12, 14, 4, AMBER_COLOR);
-      faceCanvas.drawCircle(169, 14, 4, AMBER_COLOR);
-      faceCanvas.drawPixel(8, 8, ST77XX_WHITE);
-      faceCanvas.drawPixel(173, 8, ST77XX_WHITE);
-    } else {
-      faceCanvas.drawCircle(15, 10, 3, AMBER_COLOR);
-      faceCanvas.drawCircle(166, 10, 3, AMBER_COLOR);
-    }
-  } else if (interaction == ROBOT_DANCE) {
-    // DANÇA: oito poses alternadas, olhos piscando, pupilas deslizando,
-    // boca cantando e notas musicais deslocadas a cada quadro.
-    const uint8_t phase = static_cast<uint8_t>((nowMs / 120U) % 8U);
-    const int8_t bob = (phase % 2U) ? 3 : -3;
-    const int8_t sway = (phase < 2U || phase >= 6U) ? -4 :
-                        (phase >= 3U && phase <= 4U) ? 4 : 0;
-    const uint16_t danceA = color565(60, 225, 255);
-    const uint16_t danceB = color565(255, 85, 210);
-    const uint16_t danceC = color565(255, 210, 70);
+    // O gesto positivo aparece no canto, como um pequeno emoji do pet.
+    drawThumbsUp(2, 44 - static_cast<int16_t>(roundf(2.0f * beat)),
+                 scale565(accent, 0.90f));
+    drawSmoothCurve(faceCanvas, 82, 62 + hop, 110 + pose.eyeTiltL,
+                    79 + hop + static_cast<int16_t>(pose.mouthLift),
+                    138, 62 + hop, accent,
+                    static_cast<uint8_t>(max(3.0f, 6.0f + pose.mouthOpen * 0.3f)));
 
-    // Pálpebras coloridas e pupilas com brilho.
-    if (phase == 1U || phase == 5U) {
-      faceCanvas.fillRoundRect(leftEye - 21, 18 + bob, 42, 17, 7, danceA);
-      faceCanvas.drawLine(rightEye - 19, 22 - bob, rightEye + 19, 22 - bob, danceB);
-      faceCanvas.drawLine(rightEye - 15, 24 - bob, rightEye + 15, 24 - bob, danceB);
-    } else if (phase == 3U || phase == 7U) {
-      faceCanvas.drawLine(leftEye - 19, 22 - bob, leftEye + 19, 22 - bob, danceA);
-      faceCanvas.drawLine(leftEye - 15, 24 - bob, leftEye + 15, 24 - bob, danceA);
-      faceCanvas.fillRoundRect(rightEye - 21, 18 + bob, 42, 17, 7, danceB);
-    } else {
-      faceCanvas.fillRoundRect(leftEye - 21 + sway, 11 + bob, 42, 30, 10, danceA);
-      faceCanvas.fillRoundRect(rightEye - 21 - sway, 11 - bob, 42, 30, 10, danceB);
-      faceCanvas.fillRoundRect(leftEye - 15 + sway, 15 + bob, 30, 22, 7, BG_COLOR);
-      faceCanvas.fillRoundRect(rightEye - 15 - sway, 15 - bob, 30, 22, 7, BG_COLOR);
-      const int8_t pupilShift = static_cast<int8_t>(phase % 3U) - 1;
-      faceCanvas.fillCircle(leftEye + sway + pupilShift * 3, 25 + bob, 6, color565(0, 145, 190));
-      faceCanvas.fillCircle(rightEye - sway + pupilShift * 3, 25 - bob, 6, color565(145, 35, 145));
-      faceCanvas.fillCircle(leftEye + sway - 2, 22 + bob, 2, ST77XX_WHITE);
-      faceCanvas.fillCircle(rightEye - sway - 2, 22 - bob, 2, ST77XX_WHITE);
+  } else if (state == UI_PUMP_OFF) {
+    // STOP: um squash curto ao parar, olhos brancos estreitos e boca reta.
+    const float stopImpact = (stateElapsedMs < 360U)
+        ? 1.0f - easeOutBack(static_cast<float>(stateElapsedMs) / 360.0f) : 0.0f;
+    const int16_t h = static_cast<int16_t>(lerpFloat(17.0f, 24.0f, 1.0f - stopImpact));
+    const int16_t w = static_cast<int16_t>(lerpFloat(78.0f, 67.0f, enter));
+    drawEye(leftCx, eyeCy + 5,
+            maxI16(2, w + static_cast<int16_t>(pose.eyeWidthL)),
+            maxI16(2, h + static_cast<int16_t>(pose.eyeHeightL)), accent);
+    drawEye(rightCx, eyeCy + 5,
+            maxI16(2, w + static_cast<int16_t>(pose.eyeWidthR)),
+            maxI16(2, h + static_cast<int16_t>(pose.eyeHeightR)), accent);
+    faceCanvas.fillRoundRect(101, 70 + static_cast<int16_t>(pose.mouthLift * 0.25f),
+                             18 + static_cast<int16_t>(max(0.0f, pose.mouthOpen * 0.3f)), 3, 1, accent);
+    if (stateElapsedMs < 650U) {
+      const float thump = 1.0f - clamp01(static_cast<float>(stateElapsedMs) / 650.0f);
+      faceCanvas.drawFastHLine(37, 72, static_cast<int16_t>(10.0f * thump),
+                               scale565(accent, 0.55f));
+      faceCanvas.drawFastHLine(173, 72, static_cast<int16_t>(10.0f * thump),
+                               scale565(accent, 0.55f));
     }
 
-    // Boca muda entre sorriso e canto de boca aberta.
-    if ((phase % 2U) == 0U) {
-      faceCanvas.fillRoundRect(78, 43 - bob, 27, 11 + bob, 5, danceB);
-      faceCanvas.fillRoundRect(83, 44 - bob, 17, 4, 2, BG_COLOR);
-    } else {
-      faceCanvas.drawLine(77, 45 + bob, 85, 51 + bob, danceA);
-      faceCanvas.drawLine(85, 51 + bob, 94, 53 + bob, danceA);
-      faceCanvas.drawLine(94, 53 + bob, 103, 51 + bob, danceA);
-      faceCanvas.drawLine(103, 51 + bob, 111, 45 + bob, danceA);
-    }
-
-    // Notas musicais saltando entre os cantos, mais pequenos brilhos de festa.
-    const int16_t noteY = (phase % 2U) ? 8 : 13;
-    const int16_t leftNoteX = 8 + static_cast<int16_t>((phase % 4U) * 3U);
-    const int16_t rightNoteX = 161 - static_cast<int16_t>((phase % 4U) * 3U);
-    faceCanvas.fillCircle(leftNoteX, noteY + 15, 3, danceC);
-    faceCanvas.drawLine(leftNoteX + 2, noteY + 13, leftNoteX + 2, noteY, danceC);
-    faceCanvas.drawLine(leftNoteX + 2, noteY, leftNoteX + 8, noteY + 2, danceC);
-    faceCanvas.fillCircle(rightNoteX, noteY + 15, 3, danceB);
-    faceCanvas.drawLine(rightNoteX + 2, noteY + 13, rightNoteX + 2, noteY, danceB);
-    faceCanvas.drawLine(rightNoteX + 2, noteY, rightNoteX + 8, noteY + 2, danceB);
-    faceCanvas.drawPixel(25, 49, ST77XX_WHITE);
-    faceCanvas.drawPixel(154, 48, ST77XX_WHITE);
-  } else {
-    switch (state) {
-      case UI_BOOT: {
-      int16_t eyeHeight = 4 + static_cast<int16_t>(elapsedMs / 12U);
-      if (eyeHeight > 27) eyeHeight = 27;
-      const int16_t y = eyeY - eyeHeight / 2;
-
-      faceCanvas.fillRoundRect(leftEye - 21, y, 42, eyeHeight, 9, CYAN_COLOR);
-      faceCanvas.fillRoundRect(rightEye - 21, y, 42, eyeHeight, 9, CYAN_COLOR);
-      if (eyeHeight >= 13) {
-        faceCanvas.fillCircle(leftEye, eyeY, 6, BG_COLOR);
-        faceCanvas.fillCircle(rightEye, eyeY, 6, BG_COLOR);
-        faceCanvas.fillCircle(leftEye - 2, eyeY - 3, 2, ST77XX_WHITE);
-        faceCanvas.fillCircle(rightEye - 2, eyeY - 3, 2, ST77XX_WHITE);
-      }
-      faceCanvas.drawLine(85, 50, 102, 50, accent);
-      break;
-    }
-
-    case UI_WAITING: {
-      const uint8_t phase = static_cast<uint8_t>((nowMs / 350U) % 3U);
-      int8_t shift = 0;
-      if (phase == 0) shift = -5;
-      else if (phase == 2) shift = 5;
-
-      if (waitingBlink) {
-        faceCanvas.drawLine(leftEye - 20, eyeY, leftEye + 20, eyeY, CYAN_COLOR);
-        faceCanvas.drawLine(rightEye - 20, eyeY, rightEye + 20, eyeY, CYAN_COLOR);
-        faceCanvas.drawLine(leftEye - 15, eyeY + 2, leftEye + 15, eyeY + 2, CYAN_COLOR);
-        faceCanvas.drawLine(rightEye - 15, eyeY + 2, rightEye + 15, eyeY + 2, CYAN_COLOR);
-      } else {
-        for (int16_t cx : {leftEye, rightEye}) {
-          faceCanvas.fillRoundRect(cx - 21, 10, 42, 29, 9, CYAN_COLOR);
-          faceCanvas.fillRoundRect(cx - 16, 14, 32, 21, 7, BG_COLOR);
-          faceCanvas.fillCircle(cx + shift, eyeY, 7, color565(0, 165, 210));
-          faceCanvas.fillCircle(cx + shift - 2, eyeY - 3, 2, ST77XX_WHITE);
-          faceCanvas.drawPixel(cx + shift + 2, eyeY + 3, color565(90, 230, 255));
-        }
-      }
-      faceCanvas.fillCircle(85, 51, 2, accent);
-      faceCanvas.fillCircle(91, 51, 2, accent);
-      faceCanvas.fillCircle(97, 51, 2, accent);
-      break;
-    }
-
-    case UI_CONNECTED:
-      if (normalBlink) {
-        faceCanvas.drawLine(leftEye - 19, 22, leftEye + 19, 22, GREEN_COLOR);
-        faceCanvas.drawLine(rightEye - 19, 22, rightEye + 19, 22, GREEN_COLOR);
-      } else {
-        for (int16_t dx = -18; dx <= 18; ++dx) {
-          const int16_t y = 15 + ((dx * dx) / 23);
-          faceCanvas.drawLine(leftEye + dx, y, leftEye + dx, y + 2, GREEN_COLOR);
-          faceCanvas.drawLine(rightEye + dx, y, rightEye + dx, y + 2, GREEN_COLOR);
-        }
-      }
-      faceCanvas.drawPixel(22, 37, RED_COLOR);
-      faceCanvas.drawPixel(25, 39, RED_COLOR);
-      faceCanvas.drawPixel(157, 39, RED_COLOR);
-      faceCanvas.drawPixel(160, 37, RED_COLOR);
-      faceCanvas.drawLine(79, 47, 84, 52, GREEN_COLOR);
-      faceCanvas.drawLine(84, 52, 91, 54, GREEN_COLOR);
-      faceCanvas.drawLine(91, 54, 98, 52, GREEN_COLOR);
-      faceCanvas.drawLine(98, 52, 103, 47, GREEN_COLOR);
-      break;
-
-    case UI_PUMP_ON: {
-      const bool pulse = ((nowMs / 450U) % 2U) == 0U;
-      const uint16_t eyeColor = pulse ? GREEN_COLOR : color565(0, 185, 110);
-      faceCanvas.fillTriangle(26, 9, 68, 16, 66, 20, eyeColor);
-      faceCanvas.fillTriangle(156, 9, 114, 16, 116, 20, eyeColor);
-      for (int16_t cx : {leftEye, rightEye}) {
-        faceCanvas.fillRoundRect(cx - 19, 14, 38, 25, 7, eyeColor);
-        faceCanvas.fillCircle(cx, eyeY, 7, BG_COLOR);
-        faceCanvas.fillCircle(cx - 2, eyeY - 3, 2, ST77XX_WHITE);
-      }
-      faceCanvas.drawLine(81, 51, 101, 51, eyeColor);
-      faceCanvas.drawFastVLine(75, 45, 7, eyeColor);
-      faceCanvas.drawFastVLine(107, 45, 7, eyeColor);
-      break;
-    }
-
-    case UI_PUMP_OFF:
-      faceCanvas.fillRoundRect(leftEye - 20, 12, 40, 25, 9, MUTED_COLOR);
-      faceCanvas.fillRoundRect(rightEye - 20, 12, 40, 25, 9, MUTED_COLOR);
-      faceCanvas.fillRect(leftEye - 19, 12, 38, 12, FACE_COLOR);
-      faceCanvas.fillRect(rightEye - 19, 12, 38, 12, FACE_COLOR);
-      faceCanvas.drawLine(leftEye - 18, 24, leftEye + 18, 24, ST77XX_WHITE);
-      faceCanvas.drawLine(rightEye - 18, 24, rightEye + 18, 24, ST77XX_WHITE);
-      faceCanvas.drawLine(83, 51, 99, 51, MUTED_COLOR);
-      break;
-
-    case UI_DISCONNECTED:
-      faceCanvas.drawLine(29, 12, 47, 18, RED_COLOR);
-      faceCanvas.drawLine(55, 18, 69, 12, RED_COLOR);
-      faceCanvas.drawLine(113, 12, 127, 18, RED_COLOR);
-      faceCanvas.drawLine(135, 18, 153, 12, RED_COLOR);
-      faceCanvas.fillRoundRect(leftEye - 17, 17, 34, 21, 7, RED_COLOR);
-      faceCanvas.fillRoundRect(rightEye - 17, 17, 34, 21, 7, RED_COLOR);
-      faceCanvas.fillCircle(leftEye, 25, 6, BG_COLOR);
-      faceCanvas.fillCircle(rightEye, 25, 6, BG_COLOR);
-      faceCanvas.fillTriangle(35, 37, 41, 37, 38, 45, color565(40, 170, 255));
-      faceCanvas.fillTriangle(141, 37, 147, 37, 144, 45, color565(40, 170, 255));
-      faceCanvas.drawLine(80, 54, 85, 50, RED_COLOR);
-      faceCanvas.drawLine(85, 50, 97, 50, RED_COLOR);
-      faceCanvas.drawLine(97, 50, 102, 54, RED_COLOR);
-      break;
+  } else { // BLE caiu: surpresa breve, depois expressao vai acalmando.
+    const float surprise = (stateElapsedMs < 700U)
+        ? easeOutBack(static_cast<float>(stateElapsedMs) / 700.0f) : 1.0f;
+    int16_t h = static_cast<int16_t>(lerpFloat(30.0f, 55.0f, surprise));
+    h = static_cast<int16_t>(lerpFloat(h, 6.0f, blink * 0.65f));
+    h = static_cast<int16_t>(lerpFloat(7.0f, h, enter));
+    const int16_t w = static_cast<int16_t>(lerpFloat(46.0f, 68.0f, enter));
+    drawEye(leftCx, eyeCy + 1,
+            maxI16(2, w + static_cast<int16_t>(pose.eyeWidthL)),
+            maxI16(2, h + static_cast<int16_t>(pose.eyeHeightL)), accent);
+    drawEye(rightCx, eyeCy + 1,
+            maxI16(2, w + static_cast<int16_t>(pose.eyeWidthR)),
+            maxI16(2, h + static_cast<int16_t>(pose.eyeHeightR)), accent);
+    faceCanvas.fillRoundRect(104, 68, 12, 8, 4, accent);
+    faceCanvas.fillRoundRect(107, 70, 6, 4, 2, BG_COLOR);
+    // Pequenos sinais de link interrompido, longe da leitura principal.
+    if ((nowMs / 420U) % 2U == 0U) {
+      faceCanvas.drawPixel(25, 24, scale565(accent, 0.35f));
+      faceCanvas.drawPixel(195, 24, scale565(accent, 0.35f));
     }
   }
 
-  faceCanvas.fillCircle(2, 5, 1, accent);
-  faceCanvas.fillCircle(180, 5, 1, accent);
+  // Microgestos do banco de poses: brilhos apenas quando o clipe pede.
+  if (pose.sparkle >= 2.0f) {
+    const uint8_t radius = static_cast<uint8_t>(1 + min(3.0f, pose.sparkle * 0.5f));
+    const uint16_t shimmer = scale565(accent, 0.35f + 0.12f * pose.sparkle);
+    drawSparkle(18 + static_cast<int16_t>(pose.driftX), 44, radius, shimmer);
+    drawSparkle(202 + static_cast<int16_t>(pose.driftX), 43, radius, shimmer);
+  }
 
-  // Transferência em bloco da imagem já composta: reduz bastante o cintilar.
+  // Envia so a regiao facial, nunca limpa o LCD todo durante a animacao.
   tft.drawRGBBitmap(FACE_AREA_X, FACE_AREA_Y, faceCanvas.getBuffer(),
                     FACE_AREA_W, FACE_AREA_H);
 }
 
-static void drawStaticScreen(UiState state, RobotInteraction interaction) {
-  if (!tftReady) return;
-
-  const uint16_t accent = (interaction == ROBOT_ANGRY) ? RED_COLOR :
-                          (interaction == ROBOT_DANCE) ? color565(255, 90, 220) :
-                          statusColor(state);
-
-  // A tela inteira só é limpa quando muda o estado do sistema.
-  tft.fillScreen(BG_COLOR);
-
-  // Fundo técnico sutil, sem animação nem efeito estroboscópico.
-  tft.drawFastHLine(7, 16, 226, color565(24, 46, 62));
-  tft.drawFastHLine(7, 96, 226, color565(24, 46, 62));
-  tft.drawPixel(8, 8, accent);
-  tft.drawPixel(12, 8, accent);
-  tft.drawPixel(8, 12, accent);
-  tft.drawPixel(231, 8, accent);
-  tft.drawPixel(227, 8, accent);
-  tft.drawPixel(231, 12, accent);
-
-  // Cabeçalho com identidade do controlador.
-  tft.fillRoundRect(17, 3, 13, 10, 3, accent);
-  tft.fillCircle(23, 8, 2, BG_COLOR);
-  tft.setTextSize(1);
+static void drawLubrificacaoTitle() {
+  // A fonte padrao do Adafruit GFX nao imprime UTF-8; desenhamos os diacriticos
+  // manualmente para o titulo continuar aparecendo corretamente como "Lubrificação".
   tft.setTextWrap(false);
-  tft.setTextColor(ST77XX_WHITE, BG_COLOR);
-  tft.setCursor(35, 5);
-  tft.print("LUBRIFICA-O");
-  tft.setTextColor(interaction == ROBOT_ANGRY ? RED_COLOR :
-                   interaction == ROBOT_DANCE ? color565(255, 90, 220) :
-                   MUTED_COLOR, BG_COLOR);
-  tft.setCursor(167, 5);
-  if (interaction == ROBOT_ANGRY) tft.print("BRAVO!");
-  else if (interaction == ROBOT_DANCE) tft.print("DANCA!");
-  else tft.print("HF-28 / BLE");
-
-  // Corpo/visor com borda dupla, cantos e antena do robo.
-  tft.fillRoundRect(17, 20, 206, 72, 14, FACE_COLOR);
-  tft.drawRoundRect(15, 18, 210, 76, 15, accent);
-  tft.drawRoundRect(19, 22, 202, 68, 11, color565(38, 74, 91));
-  tft.drawLine(120, 18, 120, 13, accent);
-  tft.fillCircle(120, 11, 3, accent);
-  tft.fillCircle(120, 11, 1, ST77XX_WHITE);
-
-  // Rodapé de estado com indicador colorido e texto nítido.
-  tft.fillRoundRect(17, 101, 206, 25, 7, PANEL_COLOR);
-  tft.drawRoundRect(17, 101, 206, 25, 7, accent);
-  tft.fillCircle(28, 113, 3, accent);
-  tft.drawCircle(28, 113, 5, color565(35, 60, 77));
-  drawCenteredStatusText(uiLabel(state), 109, accent);
-
-  // Quatro segmentos decorativos na base, como indicador de energia.
-  const uint16_t dim = color565(28, 52, 69);
-  tft.fillRect(93, 130, 10, 2, dim);
-  tft.fillRect(106, 130, 10, 2, dim);
-  tft.fillRect(119, 130, 10, 2, dim);
-  tft.fillRect(132, 130, 10, 2, dim);
+  tft.setTextSize(2);
+  tft.setTextColor(WHITE_COLOR, BG_COLOR);
+  tft.setCursor(48, 62);
+  tft.print("Lubrifica");             // 9 caracteres, 108 px
+  tft.setCursor(156, 62);
+  tft.print('c');
+  // Cedilha de c: pequeno gancho abaixo da linha de base.
+  tft.drawPixel(162, 77, WHITE_COLOR);
+  tft.drawPixel(163, 78, WHITE_COLOR);
+  tft.drawPixel(162, 79, WHITE_COLOR);
+  tft.drawPixel(161, 80, WHITE_COLOR);
+  tft.setCursor(168, 62);
+  tft.print('a');
+  // Til de a: duas ondas em pixels, acima da letra.
+  tft.drawLine(171, 59, 174, 57, WHITE_COLOR);
+  tft.drawLine(174, 57, 177, 59, WHITE_COLOR);
+  tft.setCursor(180, 62);
+  tft.print('o');
+  tft.setTextSize(1);
 }
 
-// Chave de animação: só atualiza os olhos quando algum detalhe mudou.
-static uint32_t faceAnimationKey(UiState state, RobotInteraction interaction, uint32_t nowMs) {
-  if (interaction == ROBOT_ANGRY) return nowMs / 115U;
-  if (interaction == ROBOT_DANCE) return nowMs / 120U;
-  switch (state) {
-    case UI_BOOT:
-      return nowMs / 80U;
-    case UI_WAITING:
-      return ((nowMs / 350U) << 1) | ((nowMs % 4700U) < 150U ? 1U : 0U);
-    case UI_CONNECTED:
-      return (nowMs % 3900U) < 150U ? 1U : 0U;
-    case UI_PUMP_ON:
-      return (((nowMs / 450U) % 2U) << 1) |
-             ((nowMs % 4200U) < 150U ? 1U : 0U);
-    case UI_PUMP_OFF:
-      return (nowMs % 5200U) < 150U ? 1U : 0U;
-    case UI_DISCONNECTED:
-    default:
-      return 0;
+static void drawStartupLogo() {
+  tft.fillScreen(BG_COLOR);
+  const uint16_t white = WHITE_COLOR;
+  // Logo propria: gota de fluido formada por uma orbita, sem moldura quadrada.
+  tft.drawCircle(120, 27, 16, scale565(white, 0.26f));
+  tft.drawCircle(120, 27, 11, scale565(white, 0.12f));
+  tft.fillCircle(120, 28, 7, white);
+  tft.fillTriangle(113, 27, 127, 27, 120, 12, white);
+  tft.fillCircle(118, 24, 2, BG_COLOR);
+  tft.fillCircle(119, 23, 1, white);
+  drawLubrificacaoTitle();
+  drawCenteredText("SISTEMA DE DOSAGEM HF-28", 85, scale565(white, 0.70f));
+  tft.drawRoundRect(25, 105, 190, 6, 3, scale565(white, 0.32f));
+  tft.fillRect(27, 107, 186, 2, BG_COLOR);
+  splashStartedAt = millis();
+  splashProgressDrawnAt = 0;
+  splashActive = true;
+}
+
+static void drawSplashAnimation(uint32_t now) {
+  // A logo flutua poucos pixels e o reflexo percorre a gota durante o arranque.
+  tft.fillRect(94, 7, 52, 42, BG_COLOR);
+  const float wave = sinf(static_cast<float>(now - splashStartedAt) / 230.0f);
+  const RobotPose pose = sampleDirectedPose(now);
+  const int16_t y = 27 + static_cast<int16_t>(roundf(wave * 2.0f + pose.driftY * 0.4f));
+  const uint16_t white = WHITE_COLOR;
+  tft.drawCircle(120, y, 16, scale565(white, 0.26f));
+  tft.drawCircle(120, y, 11, scale565(white, 0.12f));
+  tft.fillCircle(120, y + 1, 7, white);
+  tft.fillTriangle(113, y, 127, y, 120, y - 15, white);
+  tft.fillCircle(118, y - 3, 2, BG_COLOR);
+  tft.fillCircle(119, y - 4, 1, white);
+  const float sparkle = max(loopPulse(now - splashStartedAt, 720U, 410U),
+                            clamp01(pose.sparkle * 0.24f));
+  if (sparkle > 0.02f) {
+    tft.drawFastVLine(98, y - 4, 7, scale565(white, 0.30f + 0.6f * sparkle));
+    tft.drawFastHLine(95, y - 1, 7, scale565(white, 0.30f + 0.6f * sparkle));
+    tft.drawFastVLine(142, y + 3, 7, scale565(white, 0.24f + 0.6f * sparkle));
+    tft.drawFastHLine(139, y + 6, 7, scale565(white, 0.24f + 0.6f * sparkle));
   }
 }
 
-// --------------------------- Relay / failsafe -------------------------------
-
+// =========================== RELÉ / FAILSAFE ================================
 static void setRelay(bool turnOn) {
-  // GPIO 26 é ativo em HIGH conforme o módulo informado.
   digitalWrite(RELAY_PIN, turnOn ? HIGH : LOW);
   relayActive = turnOn;
-
-  // O valor legível da característica acompanha o estado efetivo do relé.
   if (commandCharacteristic != nullptr) {
     commandCharacteristic->setValue(turnOn ? "1" : "0");
   }
 }
 
 static void forcePumpOff(const char* reason) {
-  // Chamada também no callback de desconexão: não depende do loop() nem do OLED.
   setRelay(false);
   Serial.printf("[FAILSAFE] Relé em LOW: %s\n", reason);
 }
 
-// --------------------------- Callbacks de segurança -------------------------
-
+// =========================== BLE SECURITY ===================================
 class PumpSecurityCallbacks : public BLESecurityCallbacks {
  public:
-  uint32_t onPassKeyRequest() override {
-    return BLE_STATIC_PIN;
-  }
-
-  void onPassKeyNotify(uint32_t passKey) override {
-    // O PIN é estático; não precisa ser exibido no OLED nem no log.
-    (void)passKey;
-  }
-
-  bool onConfirmPIN(uint32_t passKey) override {
-    return passKey == BLE_STATIC_PIN;
-  }
-
-  bool onSecurityRequest() override {
-    return true;
-  }
+  uint32_t onPassKeyRequest() override { return BLE_STATIC_PIN; }
+  void onPassKeyNotify(uint32_t passKey) override { (void)passKey; }
+  bool onConfirmPIN(uint32_t passKey) override { return passKey == BLE_STATIC_PIN; }
+  bool onSecurityRequest() override { return true; }
 
 #if defined(CONFIG_BLUEDROID_ENABLED)
   void onAuthenticationComplete(esp_ble_auth_cmpl_t result) override {
@@ -637,48 +5795,39 @@ class PumpSecurityCallbacks : public BLESecurityCallbacks {
       bleConnected = false;
       forcePumpOff("falha de autenticacao BLE");
       setUiState(UI_DISCONNECTED);
+      postRobotEvent(ROBOT_EVENT_AUTH_ERROR);
     }
   }
 #endif
 };
 
-// --------------------------- Callbacks do servidor -------------------------
-
 class PumpServerCallbacks : public BLEServerCallbacks {
  public:
   void onConnect(BLEServer* server) override {
     (void)server;
-
-    // Cada nova sessão começa com a bomba desligada; não herdar estado anterior.
     forcePumpOff("inicio de nova sessao BLE");
     bleConnected = true;
     setUiState(UI_CONNECTED);
+    postRobotEvent(ROBOT_EVENT_LINK_UP);
     Serial.println("[BLE] Tablet conectado.");
   }
 
   void onDisconnect(BLEServer* server) override {
     (void)server;
-
-    // FAILSAFE PRINCIPAL: desliga imediatamente quando a conexão cai.
     bleConnected = false;
     forcePumpOff("desconexao/perda de sinal BLE");
     setUiState(UI_DISCONNECTED);
-
+    postRobotEvent(ROBOT_EVENT_LINK_LOSS);
     Serial.println("[BLE] Tablet desconectado; retomando advertising.");
     BLEDevice::startAdvertising();
   }
 };
 
-// --------------------------- Escrita da característica ---------------------
-
 class PumpCharacteristicCallbacks : public BLECharacteristicCallbacks {
  public:
   void onWrite(BLECharacteristic* characteristic) override {
-    // getValue() retorna String nas versões Arduino-ESP32 3.x usuais.
     const String value = characteristic->getValue();
 
-    // A segurança da característica exige conexão criptografada com MITM.
-    // Além disso, descartamos comandos se o servidor não estiver conectado.
     if (!bleConnected) {
       forcePumpOff("comando ignorado sem conexao BLE");
       return;
@@ -693,190 +5842,327 @@ class PumpCharacteristicCallbacks : public BLECharacteristicCallbacks {
     if (value[0] == '1') {
       setRelay(true);
       setUiState(UI_PUMP_ON);
+      postRobotEvent(ROBOT_EVENT_PUMP_START);
       Serial.println("[CMD] 1 recebido: bomba LIBERADA (GPIO 26 HIGH).");
-      return;
-    }
-
-    if (value[0] == '0') {
+    } else if (value[0] == '0') {
       setRelay(false);
       setUiState(UI_PUMP_OFF);
+      postRobotEvent(ROBOT_EVENT_PUMP_STOP);
       Serial.println("[CMD] 0 recebido: bomba TRAVADA (GPIO 26 LOW).");
-      return;
+    } else {
+      Serial.println("[BLE] Comando desconhecido; relé não alterado.");
+      characteristic->setValue(relayActive ? "1" : "0");
     }
-
-    Serial.println("[BLE] Comando desconhecido; relé não alterado.");
-    characteristic->setValue(relayActive ? "1" : "0");
   }
 };
 
-// --------------------------- Inicialização do OLED --------------------------
-
+// =========================== INICIALIZAÇÃO TFT ===============================
 static void initTFT() {
   pinMode(TFT_BL_PIN, OUTPUT);
-  digitalWrite(TFT_BL_PIN, HIGH);  // Liga a iluminação da tela.
+  digitalWrite(TFT_BL_PIN, HIGH);
 
-  // SPI do display da TTGO T-Display.
   SPI.begin(TFT_SCLK_PIN, -1, TFT_MOSI_PIN, TFT_CS_PIN);
   tft.init(TFT_NATIVE_WIDTH, TFT_NATIVE_HEIGHT);
   tft.setRotation(1);
   tft.setTextWrap(false);
 
   if (faceCanvas.getBuffer() == nullptr) {
-    Serial.println("[TFT] Sem memoria para o buffer do rosto; mantendo o BLE ativo.");
+    Serial.println("[TFT] Sem memoria para buffer facial; BLE segue ativo.");
     tftReady = false;
     return;
   }
 
   tftReady = true;
-  Serial.printf("[TFT] ST7789 iniciado: %u x %u; MOSI=%u SCLK=%u CS=%u DC=%u RST=%u BL=%u.\n",
+  Serial.printf("[TFT] ST7789 iniciado: %u x %u.\n",
                 static_cast<unsigned>(tft.width()),
-                static_cast<unsigned>(tft.height()),
-                TFT_MOSI_PIN, TFT_SCLK_PIN, TFT_CS_PIN, TFT_DC_PIN,
-                TFT_RST_PIN, TFT_BL_PIN);
-
-  drawStaticScreen(UI_BOOT, ROBOT_NORMAL);
-  for (uint8_t frame = 0; frame < 5; ++frame) {
-    drawFaceExpression(UI_BOOT, ROBOT_NORMAL,
-                       static_cast<uint32_t>(frame) * 90U, millis());
-    delay(70);
-  }
+                static_cast<unsigned>(tft.height()));
+  drawStartupLogo();
 }
 
-// --------------------------- Inicialização do BLE ---------------------------
-
+// =========================== INICIALIZAÇÃO BLE ===============================
 static void initBLE() {
   BLEDevice::init(BLE_DEVICE_NAME);
-
-  // PIN estático de 6 dígitos + Secure Connections + MITM + bonding.
-  // A API antiga setStaticPIN é usada até o Core 3.3.0.
   BLESecurity security;
+
 #if ESP_ARDUINO_VERSION <= ESP_ARDUINO_VERSION_VAL(3, 3, 0)
+  // API de segurança usada até o Arduino-ESP32 3.3.0.
   security.setStaticPIN(BLE_STATIC_PIN);
   security.setCapability(ESP_IO_CAP_OUT);
   security.setAuthenticationMode(ESP_LE_AUTH_REQ_SC_MITM_BOND);
   security.setRespEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
-  BLEDevice::setEncryptionLevel(ESP_BLE_SEC_ENCRYPT);
+  // O nível de criptografia é negociado pela configuração de autenticação.
 #else
+  // API atualizada nas versões posteriores do Core 3.x.
   BLESecurity::setPassKey(true, BLE_STATIC_PIN);
   BLESecurity::setCapability(ESP_IO_CAP_OUT);
   BLESecurity::setAuthenticationMode(true, true, true);
-  BLESecurity::setEncryptionLevel(ESP_BLE_SEC_ENCRYPT);
+  // A autenticacao e a negociacao de seguranca sao configuradas acima.
 #endif
 
   BLEDevice::setSecurityCallbacks(new PumpSecurityCallbacks());
-
   bleServer = BLEDevice::createServer();
   bleServer->setCallbacks(new PumpServerCallbacks());
 
   BLEService* service = bleServer->createService(SERVICE_UUID);
-
   uint32_t properties = BLECharacteristic::PROPERTY_READ |
                         BLECharacteristic::PROPERTY_WRITE;
-
 #if defined(CONFIG_NIMBLE_ENABLED)
-  // No NimBLE, estas propriedades protegem diretamente o acesso à característica.
   properties |= BLECharacteristic::PROPERTY_READ_AUTHEN |
                 BLECharacteristic::PROPERTY_WRITE_AUTHEN;
 #endif
 
   commandCharacteristic = service->createCharacteristic(
-      CHARACTERISTIC_UUID,
-      properties
-  );
+      CHARACTERISTIC_UUID, properties);
   commandCharacteristic->setCallbacks(new PumpCharacteristicCallbacks());
   commandCharacteristic->setValue("0");
 
 #if defined(CONFIG_BLUEDROID_ENABLED)
-  // No Bluedroid (stack padrão do ESP32), a proteção é definida nas permissões GATT.
   commandCharacteristic->setAccessPermissions(
-      ESP_GATT_PERM_READ_ENC_MITM | ESP_GATT_PERM_WRITE_ENC_MITM
-  );
+      ESP_GATT_PERM_READ_ENC_MITM | ESP_GATT_PERM_WRITE_ENC_MITM);
 #endif
 
   service->start();
-
   BLEAdvertising* advertising = BLEDevice::getAdvertising();
   advertising->addServiceUUID(SERVICE_UUID);
   advertising->setScanResponse(true);
   advertising->setMinPreferred(0x06);
   advertising->setMaxPreferred(0x12);
-
   setUiState(UI_WAITING);
   BLEDevice::startAdvertising();
 
   Serial.println("[BLE] Servidor Bomba_HF28 anunciado.");
-  Serial.println("[BLE] Aguardando tablet; PIN de pareamento: 123456.");
+  Serial.println("[BLE] PIN de pareamento: 123456.");
 }
 
-// --------------------------- Arduino setup/loop -----------------------------
+// =========================== MAINTAINER NOTES ================================
+// The following notes document the runtime contracts that should remain true
+// when this sketch evolves. They are intentionally colocated with the firmware
+// because this embedded system may be edited from the Arduino IDE without a
+// separate documentation viewer available on the factory floor.
+//
+// RUNTIME CONTRACT 01 — OUTPUT SAFETY
+// GPIO 26 is the only output that commands the relay in this firmware. HIGH is
+// the energized request and LOW is the fail-safe request. At reset, the output
+// is explicitly written LOW before BLE or display initialization is attempted.
+// A disconnected BLE client must never leave the relay energized. Do not move
+// these safety writes into rendering functions or animation callbacks.
+//
+// RUNTIME CONTRACT 02 — UI IS OBSERVATION, NOT CONTROL
+// RobotClipId and PoseKeyframe affect only the screen. A dropped animation
+// frame, disabled TFT or malformed pose key cannot change the relay state.
+// The display can be disabled by allocation failure while the BLE controller
+// continues to apply its relay safety policy.
+//
+// RUNTIME CONTRACT 03 — NO LONG DELAYS IN ANIMATION
+// A clip contains sampled shapes, not a scheduled sequence of blocking delays.
+// Animation time comes from millis(), and the director may be called on every
+// loop. The only fixed loop delay is a short cooperative yield. This preserves
+// time for the BLE task and prevents a long eye-blink effect from delaying a
+// stop command or safety transition.
+//
+// RUNTIME CONTRACT 04 — CLIP INTERPOLATION
+// The keyframe bank is constant data placed in flash. samplePoseClip() reads
+// adjacent keyframes and interpolates all channels. setDisplayedClip() keeps
+// the previous clip identifier long enough to blend from the old pose into
+// the new pose. Avoid copying the entire animation bank into RAM.
+//
+// RUNTIME CONTRACT 05 — EVENT OWNERSHIP
+// BLE callbacks post a small event code. They do not render pixels and do not
+// attempt to update TFT objects, because those operations are owned by loop().
+// The director consumes pendingRobotEvent under a short critical section. If
+// additional callbacks are added, post an event rather than drawing directly.
+//
+// RUNTIME CONTRACT 06 — STABLE HARDWARE MAPPING
+// Classic TTGO T-Display SPI mapping in this sketch: MOSI 19, SCLK 18, CS 5,
+// DC 16, RST 23, BL 4. Relay remains GPIO 26. BOOT is GPIO 0. GPIO 35 is an
+// input-only pin and has no internal pull-up; its electrical circuit must hold
+// a defined idle level. If the board revision differs, change the pin constants
+// and validate the physical button circuit before relying on the input.
+//
+// RUNTIME CONTRACT 07 — BLE PROTOCOL COMPATIBILITY
+// The browser application expects service UUID aaaa, characteristic UUID bbbb,
+// device name Bomba_HF28, and single-byte commands '1' and '0'. Do not change
+// UUIDs or command semantics unless the PWA is updated at the same time.
+// A command with any other length or content is ignored. An invalid command
+// must not infer a request to energize the relay.
+//
+// RUNTIME CONTRACT 08 — STATE AUTHORITATIVENESS
+// The physical output and BLE connection are authoritative for the UI states.
+// The pet may embellish these states with facial movement, but it cannot claim
+// that pumping is active unless the relay state was actually requested active.
+// STOP is a transient display state; after its display interval, the state
+// returns to connected or waiting based on the actual BLE connection value.
+//
+// RUNTIME CONTRACT 09 — FOUR-SECOND BOOT REACTION
+// ANGRY_DURATION_MS is a duration in milliseconds after the wake animation has
+// completed. 4000 therefore means four complete seconds in the angry pose,
+// excluding the WAKE_ANIMATION_MS transition. SASSY_DURATION_MS is independent.
+//
+// RUNTIME CONTRACT 10 — KEEP THE SCREEN LEGIBLE
+// Screen geometry is 240 x 135 after rotation(1). The face canvas is 220 x 90
+// placed at (10,19), with a compact status title above and a small footer below.
+// New decorations should stay behind the eyes, avoid covering labels and be
+// clipped to faceCanvas. Rendering on faceCanvas keeps the main display from
+// flashing as a full-screen clear would.
+//
+// ANIMATION BANK INDEX GUIDE
+// 00–07: sleeping, slow breathing, dreaming, small twitches, and drowsiness.
+// 08–19: connected idle, hello reaction, blinking, curiosity, settling and joy.
+// 20–31: pump-active rhythm, flow impression, celebration, steady confidence.
+// 32–35: STOP impact, mechanical settling, serious hold, and exhale.
+// 36–43: lost-link surprise, scanning left/right, retry, and recovery.
+// 44–49: wake anticipation, eye snap, anger, brief shake, glare and settling.
+// 50–55: side-eye, wink, smirk, playful shake and return to neutral.
+// 56–63: splash logo movement and fluid-themed intro choreography.
+// 64–67: short acknowledgement, confirmation, error, and return events.
+//
+// ANIMATION TUNING GUIDE
+// 1. Tune clip duration before increasing amplitude; slower movement usually
+//    reads as more polished on a small TFT than an aggressive displacement.
+// 2. Use signed values near zero for ordinary idle movement. Values beyond +/-4
+//    should be reserved for intentional surprise, impact, or clear reaction.
+// 3. Preserve the solid eye fill and do not add pupils: the pet identity relies
+//    on the eye silhouettes, relative height, angle, spacing and timing.
+// 4. Change colors in statusColor()/faceColorFor() so all expressions retain the
+//    requested palette: red for angry, brown for sassy, white for normal states.
+// 5. The current bank is intentionally monochrome-friendly and does not depend
+//    on gradients, sprites, file assets, Wi-Fi or a second microcontroller.
+//
+// DEVELOPMENT CHECKLIST BEFORE CONNECTING A REAL PUMP
+// [ ] Compile against the exact Arduino-ESP32 core installed on the target PC.
+// [ ] Confirm ST7789 orientation and text positions on the physical T-Display.
+// [ ] Test BLE pairing and write '0' first; verify relay is de-energized.
+// [ ] Disconnect the phone while the relay is active and verify GPIO 26 goes LOW.
+// [ ] Send invalid BLE commands and confirm they do not energize the relay.
+// [ ] Press BOOT after startup and verify wake + four-second angry hold.
+// [ ] Verify GPIO35 external button idle level and debounce behavior.
+// [ ] Keep relay contacts and high-current wiring isolated from the ESP32 logic.
+// [ ] Test repeated start/stop cycles before connecting the fluid dispensing load.
+// [ ] Review serial diagnostics for authentication failure and reconnect behavior.
+//
+// RESOURCE NOTES
+// The RGB565 face buffer is approximately 39.6 KiB (220 x 90 x 2 bytes). The
+// animation keyframe bank is stored in program flash and read a pair of keys
+// per rendered frame. It is not copied to heap memory. If another large canvas
+// or image cache is added, measure free heap before enabling both simultaneously.
+// Avoid allocating Strings or variable-length buffers inside the render path.
+// Small fixed-size structures are deliberately used for frame samples.
+//
+// THREADING NOTES
+// The BLE stack may invoke callbacks from another task. The relay flag remains
+// volatile because callbacks can update it outside loop(). The UI snapshot uses
+// a portMUX critical section. Animation event posting similarly protects the
+// pending byte with a small dedicated mux. Do not hold either mux while drawing,
+// logging long messages, performing BLE operations or sleeping.
+//
+// RECOVERY NOTES
+// If display buffer allocation fails, the firmware reports the issue over Serial
+// and returns with the relay safety/BLE logic alive. If the BLE server cannot be
+// initialized, investigate the Arduino-ESP32 BLE library version before changing
+// the UI bank. The animation engine intentionally has no dependency on a cloud
+// service or filesystem. This makes it suitable for an offline shop-floor device.
+//
+// CHANGE CONTROL
+// For future edits, preserve the UUIDs and GPIO mappings as a compatibility
+// boundary. Keep visual changes in drawFaceExpression(), drawSplashAnimation(),
+// and the keyframe bank. Keep new state-machine branches in updateAnimationDirector
+// and the existing UiState handling. Validate the compilation against the real
+// library versions and do not assume host-side static inspection proves that a
+// hardware build will link successfully.
+// ========================= END MAINTAINER NOTES ==============================
 
+// =========================== SETUP / LOOP ====================================
 void setup() {
   Serial.begin(115200);
 
-  // Força o relé para OFF logo no início, antes de inicializar periféricos.
+  // Saída em estado seguro antes de inicializar qualquer periférico.
   digitalWrite(RELAY_PIN, LOW);
   pinMode(RELAY_PIN, OUTPUT);
   digitalWrite(RELAY_PIN, LOW);
   relayActive = false;
 
-  setUiState(UI_BOOT);
   initRobotButtons();
+  setUiState(UI_BOOT);
   Serial.println("\n[BOOT] Iniciando controlador da bomba HF-28.");
 
-  // Prioridade operacional: anunciar o BLE primeiro, antes de inicializar a tela TFT.
+  // BLE inicia antes da tela para priorizar o controlador.
   initBLE();
-
-  // Display TFT inicializado depois do BLE, para priorizar a comunicacao.
   initTFT();
-
   Serial.println("[BOOT] Sistema pronto.");
 }
 
 void loop() {
   const uint32_t now = millis();
-
-  // Botões alteram somente as expressões do robô; não acionam a bomba.
   updateRobotInteractions(now);
+  const UiSnapshot directorSnapshot = getUiSnapshot();
+  updateAnimationDirector(directorSnapshot.state, robotInteraction, now);
 
-  // Segunda camada de fail-safe mantida intacta.
-  if (!bleConnected && relayActive) {
-    forcePumpOff("verificacao de seguranca no loop");
+  // Failsafe: sem cliente BLE, o rele precisa estar desligado.
+  if (!bleConnected && relayActive) forcePumpOff("verificacao de seguranca no loop");
+  if (!tftReady) { delay(12); return; }
+
+  if (splashActive) {
+    const uint32_t elapsed = now - splashStartedAt;
+    drawSplashAnimation(now);
+    if (now - splashProgressDrawnAt >= 38U) {
+      uint16_t progress = static_cast<uint16_t>((elapsed * 186UL) / SPLASH_DURATION_MS);
+      if (progress > 186) progress = 186;
+      tft.fillRect(27, 107, 186, 2, BG_COLOR);
+      if (progress > 0) tft.fillRoundRect(27, 107, progress, 2, 1, WHITE_COLOR);
+      splashProgressDrawnAt = now;
+    }
+    if (elapsed >= SPLASH_DURATION_MS) splashActive = false;
+    else { delay(10); return; }
   }
 
-  if (tftReady) {
-    UiSnapshot snapshot = getUiSnapshot();
+  UiSnapshot snapshot = getUiSnapshot();
+  static UiState lastDrawnState = static_cast<UiState>(255);
+  static RobotInteraction lastDrawnInteraction = static_cast<RobotInteraction>(255);
+  static uint32_t lastFaceFrameAt = 0;
 
-    static UiState lastDrawnState = static_cast<UiState>(255);
-    static RobotInteraction lastDrawnInteraction = static_cast<RobotInteraction>(255);
-    static uint32_t lastFaceKey = UINT32_MAX;
-
-    const bool layoutChanged =
-        (snapshot.state != lastDrawnState) ||
-        (robotInteraction != lastDrawnInteraction);
-
-    if (layoutChanged) {
-      drawStaticScreen(snapshot.state, robotInteraction);
-      drawFaceExpression(snapshot.state, robotInteraction,
-                         now - snapshot.changedAt, now);
-      lastDrawnState = snapshot.state;
-      lastDrawnInteraction = robotInteraction;
-      lastFaceKey = faceAnimationKey(snapshot.state, robotInteraction, now);
-    } else {
-      // Atualiza o rosto em buffer RAM; o resto da tela fica estático.
-      const uint32_t key = faceAnimationKey(snapshot.state, robotInteraction, now);
-      if (key != lastFaceKey) {
-        drawFaceExpression(snapshot.state, robotInteraction,
-                           now - interactionStartedAt, now);
-        lastFaceKey = key;
-      }
-    }
-
-    // Após 3 s, a expressão de perda de conexão retorna à busca.
-    if (snapshot.state == UI_DISCONNECTED &&
-        (now - snapshot.changedAt) >= 3000U) {
-      setUiState(UI_WAITING);
-    }
+  const bool layoutChanged = snapshot.state != lastDrawnState ||
+                             robotInteraction != lastDrawnInteraction;
+  if (layoutChanged) {
+    faceColorFrom = faceColorCurrent;
+    faceColorTarget = faceColorFor(snapshot.state, robotInteraction);
+    faceTransitionStartedAt = now;
+    drawStaticScreen(snapshot.state, robotInteraction);
+    lastDrawnState = snapshot.state;
+    lastDrawnInteraction = robotInteraction;
   }
 
-  delay(10);
+  float transition = static_cast<float>(now - faceTransitionStartedAt) / 420.0f;
+  if (transition < 0.0f) transition = 0.0f;
+  if (transition > 1.0f) transition = 1.0f;
+  transition = transition * transition * (3.0f - 2.0f * transition); // smoothstep
+  faceMorphProgress = transition;
+  faceColorCurrent = blend565(faceColorFrom, faceColorTarget, transition);
+
+  if (layoutChanged || now - lastFaceFrameAt >= FACE_FRAME_MS || transition < 1.0f) {
+    drawFaceExpression(snapshot.state, robotInteraction,
+                       now - interactionStartedAt,
+                       now - snapshot.changedAt, now);
+    lastFaceFrameAt = now;
+  }
+
+  // LED de estado pulsante no canto superior, sem redesenhar o layout inteiro.
+  static uint32_t lastStatusLedAt = 0;
+  if (now - lastStatusLedAt >= 90U) {
+    const uint16_t ledColor = statusColor(snapshot.state, robotInteraction);
+    const float pulse = 0.28f + 0.72f * (0.5f + 0.5f * sinf(now / 330.0f));
+    tft.fillRect(228, 2, 10, 12, BG_COLOR);
+    tft.fillCircle(233, 8, 3, scale565(ledColor, 0.10f + 0.15f * pulse));
+    tft.fillCircle(233, 8, 2, scale565(ledColor, 0.32f + 0.35f * pulse));
+    tft.drawPixel(233, 8, ledColor);
+    lastStatusLedAt = now;
+  }
+
+  // STOP fica visivel por um instante; depois volta ao conectado ou ao repouso.
+  if (snapshot.state == UI_PUMP_OFF && now - snapshot.changedAt >= PUMP_STOP_DISPLAY_MS) {
+    setUiState(bleConnected ? UI_CONNECTED : UI_WAITING);
+  } else if (snapshot.state == UI_DISCONNECTED && !bleConnected &&
+             now - snapshot.changedAt >= 3000U) {
+    setUiState(UI_WAITING);
+  }
+  delay(8);
 }
