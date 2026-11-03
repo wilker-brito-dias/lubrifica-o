@@ -6,6 +6,7 @@
 <meta name="theme-color" content="#0c141d">
 <title>Histórico HF28</title>
 <link rel="manifest" href="manifest.webmanifest">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://api.github.com https://cdnjs.cloudflare.com; object-src 'none'; base-uri 'none'; form-action 'self'">
 <link rel="icon" href="icon-192.png">
 <style>
 :root{--bg:#0c141d;--ink:#e8eef5;--mut:#8ea0b3;--acc:#f5a524;--ok:#3ddc97;--bad:#ff6b6b;--line:rgba(255,255,255,.13);color-scheme:dark}
@@ -91,7 +92,21 @@ input{display:block;width:100%;max-width:100%;min-width:0;margin-top:6px;padding
 .mt summary b{flex:1 1 120px}
 .dy{display:flex;flex-wrap:wrap;justify-content:space-between;gap:2px 8px;width:100%;min-height:48px;margin:0 0 6px;padding:10px 12px;text-align:left;font:inherit;color:var(--ink);background:rgba(255,255,255,.05);border:1px solid var(--line);border-radius:12px;cursor:pointer}
 .dy.sel{border-color:var(--acc);background:rgba(245,165,36,.14)}
+/* abas, chips e óleo */
+.tabs{display:flex;gap:6px;margin-top:14px}
+.tabs button{flex:1;min-width:0;min-height:48px;padding:0 4px;font:inherit;font-size:clamp(.8rem,3.2vw,.95rem);font-weight:600;color:var(--mut);background:rgba(255,255,255,.05);border:1px solid var(--line);border-radius:14px;cursor:pointer}
+.tabs button.on{color:#1b1200;background:var(--acc);border-color:var(--acc)}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px}
+.chips button{flex:1 1 auto;min-height:44px;padding:0 14px;font:inherit;font-size:.9rem;font-weight:600;color:var(--mut);background:rgba(255,255,255,.05);border:1px solid var(--line);border-radius:999px;cursor:pointer}
+.chips button.on{color:var(--acc);border-color:var(--acc);background:rgba(245,165,36,.1)}
+.tabs button:focus-visible,.chips button:focus-visible{outline:3px solid #7cc4ff;outline-offset:2px}
+.oleo{display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 12px;padding:12px 14px;border-radius:14px;background:rgba(0,0,0,.25);border:1px solid var(--line);margin-top:6px}
+.oleo>div{min-width:0}.oleo span{display:block;font-size:.8rem}
+.top{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}
+.top h2{margin:0;flex:1}
+.small{font-size:.85rem}
 </style>
+<link rel="stylesheet" href="glass.css">
 </head>
 <body>
 <div id="main"></div>
@@ -102,7 +117,7 @@ input{display:block;width:100%;max-width:100%;min-width:0;margin-top:6px;padding
 const $=s=>document.querySelector(s);
 const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt=n=>Number(n||0).toLocaleString('pt-BR',{maximumFractionDigits:1});
-let ROWS=[],RANK=[],OLEOS=[],OLEO=null,DB=null,F='';
+let ALL=[],ROWS=[],RANK=[],OLEOS=[],OLEO=null,DB=null,F='',SEMOLEO=0,INCL=false;
 const qry=(d,q)=>{const st=d.prepare(q),o=[];while(st.step())o.push(st.getAsObject());st.free();return o};
 const box=h=>$('#main').innerHTML='<section class="g">'+h+'</section>';
 
@@ -110,12 +125,12 @@ async function load(){
   if(!GH.ok()){box('<h1>Histórico</h1><p class="m">Configure o GitHub em Ajustes para ler o banco.</p><button class="b p" onclick="location.href=\'index.html#ajustes\'">Abrir ajustes</button>');return}
   box('<p class="m">Lendo o banco no GitHub...</p>');
   try{
+    try{await GH.flushOleo()}catch(e){}
     const cur=await GH.read();
     if(!cur){box('<h1>Histórico</h1><p class="m">Nenhum abastecimento no banco ainda.</p><button class="b" onclick="load()">Atualizar</button>');return}
     const S=await GH.sql(),d=new S.Database(cur.bytes);DB=cur.bytes;GH.prep(d);
-    ROWS=qry(d,'SELECT * FROM abastecimentos ORDER BY fim DESC');
-    RANK=qry(d,'SELECT maquina,COUNT(*) n,SUM(litros) total,AVG(litros) media FROM abastecimentos GROUP BY maquina ORDER BY total DESC');
-    OLEOS=qry(d,'SELECT * FROM oleos');OLEO=OLEOS.find(o=>o.ativo)||OLEOS[0]||null;
+    ALL=qry(d,'SELECT * FROM abastecimentos ORDER BY fim DESC');
+    OLEOS=qry(d,'SELECT * FROM oleos');resolveOleo();CAL=null;aplicarOleo();
     d.close();draw();
   }catch(e){box('<h1>Histórico</h1><p class="warn">Não foi possível ler o banco: '+esc((e&&e.message)||e)+'</p><button class="b" onclick="load()">Tentar de novo</button>')}
 }
@@ -148,12 +163,30 @@ const custo=r=>r.litros*(r.preco!=null?r.preco:PRECO());
 const val=r=>MED==='r'?custo(r):r.litros;
 const uf=n=>MED==='r'?brl(n):fmt(n)+' L';
 const medSeg=()=>'<div class="seg"><button class="'+(MED==='l'?'on':'')+'" onclick="MED=\'l\';draw()">Litros</button><button class="'+(MED==='r'?'on':'')+'" onclick="MED=\'r\';draw()">Reais (R$)</button></div>';
+/* Tudo nesta página (registros, gráficos, alertas, ranking, gastos) vale só para o óleo selecionado. */
+const norm=s=>String(s==null?'':s).trim().toLowerCase(),semOleo=r=>r.oleo==null||String(r.oleo).trim()==='';
+const doOleo=r=>!OLEO||(!semOleo(r)&&norm(r.oleo)===norm(OLEO.nome));
+function aplicarOleo(){
+  SEMOLEO=OLEO?ALL.filter(semOleo).length:0;
+  ROWS=ALL.filter(r=>doOleo(r)||(INCL&&OLEO&&semOleo(r)));
+  const g={};ROWS.forEach(r=>{const x=g[r.maquina]||(g[r.maquina]={maquina:r.maquina,n:0,total:0});x.n++;x.total+=r.litros});
+  RANK=Object.values(g).map(x=>({maquina:x.maquina,n:x.n,total:x.total,media:x.total/x.n})).sort((a,b)=>b.total-a.total);
+  if(F&&!RANK.some(r=>r.maquina===F))F='';
+}
+let OLEO_ST='';
+function resolveOleo(){
+  const db=OLEOS.find(o=>o.ativo)||OLEOS[0]||null,loc=GH.oleoLocal(),pend=GH.oleoPend();
+  if(loc&&(pend||GH.oleoRecente())){OLEO=OLEOS.find(o=>o.uid===loc.uid)||loc;OLEO_ST=pend?'pend':'rec'}
+  else{OLEO=db;OLEO_ST=''}
+}
 function oleoSec(){
-  if(!OLEO)return'<section class="g"><h2>Óleo em uso</h2><p class="m">Nenhum óleo cadastrado. Cadastre na Administração para calcular os gastos.</p></section>';
-  const o=OLEO,L=ROWS.reduce((s,r)=>s+r.litros,0);
-  return'<section class="g"><h2>Óleo em uso</h2><p><b>'+esc(o.nome)+'</b> '+esc(o.viscosidade||'')+'</p><p class="m">'
-    +(o.codigo?'Requisição: '+esc(o.codigo)+'. ':'')+(o.preco!=null?'Preço: '+brl(o.preco)+' por litro. ':'Preço não informado. ')+(o.fornecedor?'Fornecedor: '+esc(o.fornecedor)+'. ':'')+'Selecionado na tela inicial do app.</p>'
-    +(o.bombona>0?'<p class="m">Já consumido: '+fmt(L)+' L, cerca de '+fmt(L/o.bombona)+' bombonas de '+fmt(o.bombona)+' L.</p>':'')+(o.obs?'<p class="m">'+esc(o.obs)+'</p>':'')+'</section>';
+  const av=(OLEO_ST==='pend'?'<p class="warn">Esta troca de óleo ainda não chegou ao banco. Abra a tela inicial com internet para enviar.</p>':'')
+    +(GH.publico()?'<p class="warn"><b>Repositório público.</b> Os dados desta página podem ser vistos por qualquer pessoa.</p>':'');
+  if(!OLEO)return'<p class="m">Nenhum óleo cadastrado. Cadastre na Administração para calcular os gastos.</p>'+av;
+  const o=OLEO;
+  return'<div class="oleo"><div><span class="m">Óleo selecionado na tela inicial</span><b>'+esc(o.nome)+'</b> '+esc(o.viscosidade||'')+'</div><div class="m">'+(o.preco!=null?brl(o.preco)+' por litro':'preço não informado')+'</div></div>'
+    +'<p class="m small">Esta página mostra só os abastecimentos com <b>'+esc(o.nome)+'</b>: '+ROWS.length+' de '+ALL.length+'.</p>'
+    +(SEMOLEO?'<button class="x" onclick="INCL=!INCL;aplicarOleo();draw()">'+(INCL?'Ocultar':'Incluir')+' '+SEMOLEO+' registro(s) antigo(s) sem óleo gravado</button>':'')+av;
 }
 function gastoMes(){
   const ms=[];
@@ -201,11 +234,10 @@ function porDia(rows){
   for(const r of rows){const k=dkey(new Date(r.fim)),x=g[k]||(g[k]={n:0,l:0,c:0});x.n++;x.l+=r.litros;x.c+=custo(r)}
   return g;
 }
-function initSel(){
-  if(SELK)return;
-  const ks=Object.keys(porDia(visiveis())).sort();
-  SELK=ks.length?ks[ks.length-1]:dkey(new Date());
-  const[y,m]=SELK.split('-').map(Number);CAL={y,m:m-1};OPEN.add(SELK.slice(0,7));
+function initCal(){
+  if(CAL)return;
+  const ks=Object.keys(porDia(visiveis())).sort(),k=ks.length?ks[ks.length-1]:dkey(new Date());
+  const[y,m]=k.split('-').map(Number);CAL={y,m:m-1};
 }
 function calHtml(g){
   const{y,m}=CAL,hoje=dkey(new Date()),ini=new Date(y,m,1).getDay(),n=new Date(y,m+1,0).getDate();
@@ -238,17 +270,21 @@ const rowHtml=r=>{
 };
 function diaHtml(rows){
   const sel=rows.filter(r=>dkey(new Date(r.fim)).startsWith(SELK)).sort((a,b)=>a.fim<b.fim?1:-1);
-  const L=sel.reduce((s,r)=>s+r.litros,0),C=sel.reduce((s,r)=>s+custo(r),0);
+  const L=sel.reduce((s,r)=>s+r.litros,0),C=sel.reduce((s,r)=>s+custo(r),0),est=sel.filter(r=>r.preco==null).length;
   const tit=SELK.length===7?nomeMes(+SELK.slice(0,4),+SELK.slice(5)-1):nomeDia(SELK);
-  return'<h2>'+esc(tit)+(F?' ('+esc(F)+')':'')+'</h2><p class="m">'+sel.length+' abastecimentos, '+fmt(L)+' L, '+brl(C)+'</p><ul class="ls">'+(sel.map(rowHtml).join('')||'<li class="m">Nenhum abastecimento neste período.</li>')+'</ul>';
+  return'<div class="top"><h2>'+esc(tit)+(F?' ('+esc(F)+')':'')+'</h2><button class="x" onclick="limpar()">Fechar</button></div>'
+    +'<div class="kpi"><p class="m"><b>'+sel.length+'</b>abastecimentos</p><p class="m"><b>'+fmt(L)+'</b>litros</p><p class="m"><b>'+brl(C)+'</b>gasto</p></div>'
+    +(est?'<p class="m small">'+est+' registro(s) sem preço gravado usam o preço do óleo selecionado (valor estimado).</p>':'')
+    +'<ul class="ls">'+(sel.map(rowHtml).join('')||'<li class="m">Nenhum abastecimento neste período.</li>')+'</ul>';
 }
-const datasHtml=()=>'<section class="g"><h2>Registros por data</h2>'+selMaq()+'<div id="cal"></div></section><section class="g"><h2>Meses e dias</h2><div id="tree"></div></section><section class="g" id="dia"></section>';
+const datasHtml=()=>'<section class="g"><h2>Escolha uma data</h2><p class="m">Toque em um dia. Os dias com ponto têm abastecimentos. Nada é mostrado até você escolher.</p>'+selMaq()+'<div id="cal"></div></section><section class="g" id="dia" hidden></section><section class="g"><h2>Meses e dias</h2><p class="m">Abra um mês para ver os dias com abastecimento.</p><div id="tree"></div></section>';
 function drawDatas(){
   const rows=visiveis(),g=porDia(rows),c=$('#cal'),t=$('#tree'),d=$('#dia');
   if(c)c.innerHTML=calHtml(g);
   if(t)t.innerHTML=treeHtml(g);
-  if(d)d.innerHTML=diaHtml(rows);
+  if(d){d.hidden=!SELK;d.innerHTML=SELK?diaHtml(rows):''}
 }
+function limpar(){SELK='';drawDatas()}
 function calNav(dl){const d=new Date(CAL.y,CAL.m+dl,1);CAL={y:d.getFullYear(),m:d.getMonth()};drawDatas()}
 function togM(mk,o){if(o)OPEN.add(mk);else OPEN.delete(mk)}
 function pick(k){
@@ -258,33 +294,46 @@ function pick(k){
 }
 function pickMes(){pick(CAL.y+'-'+p2(CAL.m+1))}
 
-function draw(){
-  initSel();
-  const rows=F?ROWS.filter(r=>r.maquina===F):ROWS,hoje=new Date().toDateString();
-  const tot=rows.reduce((s,r)=>s+r.litros,0),th=rows.filter(r=>new Date(r.fim).toDateString()===hoje).reduce((s,r)=>s+r.litros,0);
-  const ct=f=>rows.filter(f).reduce((s,r)=>s+custo(r),0),gt=ct(()=>1),ghj=ct(r=>new Date(r.fim).toDateString()===hoje),g30=ct(r=>Date.now()-new Date(r.fim).getTime()<30*DIA);
-  const{res,al}=analise(),base=res.some(r=>r.ex!=null),sd=d=>d.toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'});
-  const dias=[];for(let i=29;i>=0;i--){const d=new Date(Date.now()-i*DIA);dias.push({d,k:d.toLocaleDateString('pt-BR'),v:0})}
+let TAB='d',GR='diario';
+const GRS=[['diario','Consumo diário'],['dist','Distribuição'],['mensal','Gasto mensal'],['semana','Semana x média']];
+const tabBtn=(k,t)=>'<button role="tab" aria-selected="'+(TAB===k)+'" class="'+(TAB===k?'on':'')+'" onclick="TAB=\''+k+'\';draw()">'+t+'</button>';
+function consumoDiario(rows){
+  const dias=[],sd=d=>d.toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'});
+  for(let i=29;i>=0;i--){const d=new Date(Date.now()-i*DIA);dias.push({d,k:d.toLocaleDateString('pt-BR'),v:0})}
   rows.forEach(r=>{const x=dias.find(y=>y.k===new Date(r.fim).toLocaleDateString('pt-BR'));if(x)x.v+=val(r)});
-  const mx=Math.max(...dias.map(x=>x.v),1),pk=dias.reduce((a,b)=>b.v>a.v?b:a),mx2=Math.max(...res.map(r=>Math.max(r.sw,r.sb)),1);
-  $('#main').innerHTML=
-   '<section class="g"><h1>Histórico</h1><div class="kpi"><p class="m"><b>'+rows.length+'</b>abastecimentos</p><p class="m"><b>'+fmt(tot)+'</b>litros no total</p><p class="m"><b>'+brl(gt)+'</b>gasto total</p><p class="m"><b>'+fmt(th)+'</b>litros hoje</p><p class="m"><b>'+brl(ghj)+'</b>gasto hoje</p><p class="m"><b>'+brl(g30)+'</b>gasto em 30 dias</p></div>'
-   +'<div class="row"><button class="b" onclick="load()">Atualizar</button><button class="b" onclick="baixar()">Baixar banco (.db)</button></div></section>'
-   +oleoSec()
-   +'<section class="g"><h2>Alertas de consumo</h2>'
-   +(al.length?al.map(a=>'<p class="al'+(a.crit?' crit':'')+'"><b>'+esc(a.m)+'</b> ('+(a.crit?'crítico':'atenção')+')<br>'+a.txt+'</p>').join(''):base?'<p class="ok">Nenhuma máquina com consumo acima do limite.</p>':'<p class="m">Ainda não há histórico de mais de 7 dias para comparar o consumo.</p>')
-   +'<label>Limite de alerta (% acima da média semanal)<input type="number" inputmode="numeric" min="5" step="5" value="'+LIM()+'" onchange="localStorage.setItem(\'lim\',this.value||30);draw()"></label></section>'
-   +datasHtml()
-   +'<section class="g"><h2>Consumo diário, últimos 30 dias</h2>'+medSeg()+selMaq()
-   +'<div class="cht" role="img" aria-label="Litros abastecidos por dia nos últimos 30 dias">'+dias.map(x=>'<div'+(x.v?'':' class="z"')+' style="height:'+Math.max(x.v/mx*100,1.5)+'%"></div>').join('')+'</div>'
-   +'<div class="ax"><span>'+sd(dias[0].d)+'</span><span>pico: '+uf(pk.v)+' em '+sd(pk.d)+'</span><span>hoje</span></div></section>'
-   +dist()+gastoMes()
-   +'<section class="g"><h2>Esta semana contra a média</h2><p class="m">Barra grossa: últimos 7 dias. Barra fina: média semanal das 4 semanas anteriores. Vermelho: acima do limite.</p>'
-   +(res.map(r=>'<span class="rk"><b>'+esc(r.m)+'</b><span class="m"> '+fmt(r.sw)+' L'+(r.sb?', média anterior '+fmt(r.sb)+' L':'')+'</span><div class="bar'+(r.alerta?' alert':'')+'" style="width:'+Math.max(2,r.sw/mx2*100)+'%"></div>'+(r.sb?'<div class="bar ref" style="width:'+Math.max(2,r.sb/mx2*100)+'%"></div>':'')+'</span>').join('')||'<p class="m">Sem dados.</p>')+'</section>'
-   +'';
-  drawDatas();
+  const mx=Math.max(...dias.map(x=>x.v),1),pk=dias.reduce((a,b)=>b.v>a.v?b:a);
+  return'<section class="g"><h2>Consumo diário, últimos 30 dias</h2>'+medSeg()+selMaq()
+    +'<div class="cht" role="img" aria-label="Litros abastecidos por dia nos últimos 30 dias">'+dias.map(x=>'<div'+(x.v?'':' class="z"')+' style="height:'+Math.max(x.v/mx*100,1.5)+'%"></div>').join('')+'</div>'
+    +'<div class="ax"><span>'+sd(dias[0].d)+'</span><span>pico: '+uf(pk.v)+' em '+sd(pk.d)+'</span><span>hoje</span></div></section>';
+}
+function semanaMedia(res){
+  const mx2=Math.max(...res.map(r=>Math.max(r.sw,r.sb)),1);
+  return'<section class="g"><h2>Esta semana contra a média</h2><p class="m">Barra grossa: últimos 7 dias. Barra fina: média semanal das 4 semanas anteriores. Vermelho: acima do limite.</p>'
+    +(res.map(r=>'<span class="rk"><b>'+esc(r.m)+'</b><span class="m"> '+fmt(r.sw)+' L'+(r.sb?', média anterior '+fmt(r.sb)+' L':'')+'</span><div class="bar'+(r.alerta?' alert':'')+'" style="width:'+Math.max(2,r.sw/mx2*100)+'%"></div>'+(r.sb?'<div class="bar ref" style="width:'+Math.max(2,r.sb/mx2*100)+'%"></div>':'')+'</span>').join('')||'<p class="m">Sem dados.</p>')+'</section>';
+}
+function analisesHtml(rows,res){
+  const hoje=new Date().toDateString(),tot=rows.reduce((s,r)=>s+r.litros,0),th=rows.filter(r=>new Date(r.fim).toDateString()===hoje).reduce((s,r)=>s+r.litros,0);
+  const gt=rows.reduce((s,r)=>s+custo(r),0),g30=rows.filter(r=>Date.now()-new Date(r.fim).getTime()<30*DIA).reduce((s,r)=>s+custo(r),0);
+  const chips='<div class="chips" role="tablist">'+GRS.map(([k,t])=>'<button class="'+(GR===k?'on':'')+'" onclick="GR=\''+k+'\';draw()">'+t+'</button>').join('')+'</div>';
+  const graf=GR==='diario'?consumoDiario(rows):GR==='dist'?dist():GR==='mensal'?gastoMes():semanaMedia(res);
+  return'<section class="g"><h2>Resumo geral'+(OLEO?' · '+esc(OLEO.nome):'')+(F?' · '+esc(F):'')+'</h2><div class="kpi"><p class="m"><b>'+fmt(tot)+'</b>litros no total</p><p class="m"><b>'+brl(gt)+'</b>gasto total</p><p class="m"><b>'+fmt(th)+'</b>litros hoje</p><p class="m"><b>'+brl(g30)+'</b>gasto em 30 dias</p></div></section>'
+    +'<section class="g"><h2>Gráficos</h2>'+chips+'</section>'+graf;
+}
+function alertasHtml(al,base){
+  return'<section class="g"><h2>Alertas de consumo</h2>'
+    +(al.length?al.map(a=>'<p class="al'+(a.crit?' crit':'')+'"><b>'+esc(a.m)+'</b> ('+(a.crit?'crítico':'atenção')+')<br>'+a.txt+'</p>').join(''):base?'<p class="ok">Nenhuma máquina com consumo acima do limite.</p>':'<p class="m">Ainda não há histórico de mais de 7 dias para comparar o consumo.</p>')
+    +'<label>Limite de alerta (% acima da média semanal)<input type="number" inputmode="numeric" min="5" step="5" value="'+LIM()+'" onchange="localStorage.setItem(\'lim\',this.value||30);draw()"></label></section>';
+}
+function draw(){
+  initCal();
+  const rows=visiveis(),{res,al}=analise(),base=res.some(r=>r.ex!=null);
+  const head='<section class="g"><h1>Histórico</h1>'+oleoSec()+'<div class="tabs" role="tablist">'+tabBtn('d','Por data')+tabBtn('g','Análises')+tabBtn('a','Alertas'+(al.length?' ('+al.length+')':''))+'</div></section>';
+  const body=!ROWS.length?'<section class="g"><p class="m">'+(ALL.length?'Nenhum abastecimento com o óleo selecionado'+(OLEO?' ('+esc(OLEO.nome)+')':'')+'. Troque o óleo na tela inicial'+(SEMOLEO?' ou inclua os registros antigos acima':'')+'.':'Nenhum abastecimento no banco ainda.')+'</p></section>':TAB==='d'?datasHtml():TAB==='g'?analisesHtml(rows,res):alertasHtml(al,base);
+  $('#main').innerHTML=head+body+'<section class="g"><div class="row"><button class="b" onclick="load()">Atualizar</button><button class="b" onclick="baixar()">Baixar banco (.db)</button></div></section>';
+  if(TAB==='d'&&ROWS.length)drawDatas();
 }
 async function foto(p){
+  if(!GH.fotoOk(p)){alert('Caminho de foto inválido.');return}
   try{const r=await fetch(GH.u(p,1),{headers:GH.h(1)});if(!r.ok)throw new Error('GitHub '+r.status);$('#ov img').src=URL.createObjectURL(await r.blob());$('#ov').hidden=false}
   catch(e){alert('Não foi possível abrir a foto: '+e.message)}
 }
