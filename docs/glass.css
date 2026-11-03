@@ -1,0 +1,95 @@
+/* =====================================================================================
+   LIQUID GLASS — vidro líquido flutuante no estilo do iOS 26
+   Compartilhado por index.html, historico.html e admin.html. Para desligar, remova o <link>.
+   ===================================================================================== */
+:root{
+  --gl-blur:blur(22px) saturate(180%) brightness(1.06);
+  --gl-brd:rgba(255,255,255,.22);
+  --gl-fill:radial-gradient(130% 70% at 10% -15%,rgba(255,255,255,.20),transparent 55%),linear-gradient(145deg,rgba(255,255,255,.11),rgba(255,255,255,.04) 50%,rgba(255,255,255,.07));
+  --gl-edge:inset 1px 1px 0 rgba(255,255,255,.42),inset -1px -1px 0 rgba(255,255,255,.10),inset 0 0 18px rgba(255,255,255,.05);
+  --gl-drop:0 14px 36px rgba(0,0,0,.40),0 2px 8px rgba(0,0,0,.25);
+}
+
+/* luzes de fundo: dão cor para o vidro "refratar" e se movem devagar */
+body::before{content:"";position:fixed;inset:-20%;z-index:-1;pointer-events:none;
+  background:radial-gradient(38% 30% at 20% 18%,rgba(245,165,36,.30),transparent 70%),radial-gradient(40% 34% at 85% 30%,rgba(43,128,255,.30),transparent 70%),radial-gradient(45% 36% at 60% 88%,rgba(61,220,151,.18),transparent 70%);
+  filter:blur(30px);animation:gl-flutua 26s ease-in-out infinite alternate}
+@keyframes gl-flutua{to{transform:translate3d(3%,-2%,0) scale(1.08)}}
+body{padding-bottom:calc(112px + env(safe-area-inset-bottom)) !important}
+
+/* ---------- cartões ---------- */
+.g{background:var(--gl-fill);-webkit-backdrop-filter:var(--gl-blur);backdrop-filter:var(--gl-blur);border:1px solid var(--gl-brd);border-radius:28px;box-shadow:var(--gl-drop),var(--gl-edge)}
+
+/* ---------- barra inferior: cápsula flutuante ---------- */
+#nav{left:max(12px,env(safe-area-inset-left));right:max(12px,env(safe-area-inset-right));bottom:calc(10px + env(safe-area-inset-bottom));max-width:560px;margin:0 auto;padding:6px;gap:4px;z-index:50;
+  border:1px solid rgba(255,255,255,.26);border-radius:34px;
+  background:radial-gradient(140% 120% at 10% -30%,rgba(255,255,255,.26),transparent 55%),linear-gradient(160deg,rgba(255,255,255,.14),rgba(255,255,255,.05));
+  -webkit-backdrop-filter:blur(28px) saturate(200%) brightness(1.08);backdrop-filter:blur(28px) saturate(200%) brightness(1.08);
+  box-shadow:0 18px 44px rgba(0,0,0,.5),0 2px 10px rgba(0,0,0,.3),inset 1px 1px 0 rgba(255,255,255,.5),inset -1px -1px 0 rgba(255,255,255,.12),inset 0 0 22px rgba(255,255,255,.06)}
+#nav button{min-height:52px;border-radius:28px;border:1px solid transparent;color:rgba(232,238,245,.72);background:none;transition:background .25s,color .25s,box-shadow .25s,transform .15s}
+#nav button:active{transform:scale(.96)}
+#nav button.on{color:var(--acc);border-color:rgba(255,255,255,.34);
+  background:radial-gradient(120% 90% at 20% -20%,rgba(255,255,255,.38),transparent 60%),linear-gradient(180deg,rgba(255,255,255,.20),rgba(255,255,255,.07));
+  box-shadow:inset 1px 1px 0 rgba(255,255,255,.55),inset 0 -2px 6px rgba(255,255,255,.05),0 6px 16px rgba(0,0,0,.30)}
+
+/* ---------- cartão do ESP32: "ilha" flutuante no topo ---------- */
+.esp-card{position:fixed;top:calc(10px + env(safe-area-inset-top));left:max(12px,env(safe-area-inset-left));right:max(12px,env(safe-area-inset-right));max-width:560px;width:auto;margin:0 auto;z-index:40;
+  padding:9px 18px 9px 9px;gap:12px;justify-content:flex-start;border:1px solid rgba(255,255,255,.28);border-radius:999px;
+  background:radial-gradient(140% 140% at 8% -40%,rgba(255,255,255,.28),transparent 55%),linear-gradient(160deg,rgba(255,255,255,.14),rgba(255,255,255,.05));
+  -webkit-backdrop-filter:blur(28px) saturate(200%) brightness(1.08);backdrop-filter:blur(28px) saturate(200%) brightness(1.08);
+  box-shadow:0 16px 40px rgba(0,0,0,.45),0 2px 8px rgba(0,0,0,.3),inset 1px 1px 0 rgba(255,255,255,.5),inset -1px -1px 0 rgba(255,255,255,.12);transition:transform .15s}
+.esp-card:active{transform:scale(.985)}
+.esp-icon{width:44px;height:44px;border-radius:50%;background:rgba(255,255,255,.12);box-shadow:inset 1px 1px 0 rgba(255,255,255,.38),inset 0 0 12px rgba(255,255,255,.06);transition:background .3s,box-shadow .3s}
+.esp-icon.on{background:radial-gradient(circle at 30% 25%,#9ad2ff,var(--ble) 62%);color:#fff;box-shadow:0 0 0 4px rgba(43,128,255,.20),0 0 22px rgba(43,128,255,.55),inset 1px 1px 0 rgba(255,255,255,.55)}
+.esp-info h3{font-size:1rem;margin:0 0 2px}
+.esp-info p{font-size:.82rem}
+#main:has(.esp-card){padding-top:78px}
+
+/* ---------- etapas, pílulas e botões ---------- */
+.steps span{display:flex;align-items:center;justify-content:center;border-radius:999px;border:1px solid rgba(255,255,255,.20);background:linear-gradient(180deg,rgba(255,255,255,.11),rgba(255,255,255,.04));-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);box-shadow:inset 1px 1px 0 rgba(255,255,255,.22)}
+.steps .cur{color:#1b1200;border-color:rgba(255,235,190,.7);background:linear-gradient(180deg,#ffc95f,#f5a524 60%,#e5940f);box-shadow:inset 0 1px 0 rgba(255,255,255,.6),0 6px 18px rgba(245,165,36,.35)}
+.steps .done{border-color:rgba(61,220,151,.5);background:linear-gradient(180deg,rgba(61,220,151,.20),rgba(61,220,151,.07))}
+.live{-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);box-shadow:inset 1px 1px 0 rgba(255,255,255,.25),0 0 20px rgba(61,220,151,.18)}
+
+.b{border-radius:22px;border:1px solid rgba(255,255,255,.24);background:radial-gradient(130% 90% at 15% -30%,rgba(255,255,255,.28),transparent 55%),linear-gradient(180deg,rgba(255,255,255,.13),rgba(255,255,255,.05));-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);box-shadow:inset 1px 1px 0 rgba(255,255,255,.36),inset -1px -1px 0 rgba(255,255,255,.08),0 8px 20px rgba(0,0,0,.26);transition:transform .15s,box-shadow .2s}
+.b:active{transform:scale(.975)}
+.b.p{color:#1b1200;border-color:rgba(255,235,190,.75);background:radial-gradient(130% 90% at 15% -30%,rgba(255,255,255,.55),transparent 55%),linear-gradient(180deg,#ffc95f,#f5a524 58%,#e5940f);box-shadow:inset 0 1px 0 rgba(255,255,255,.7),inset 0 -3px 8px rgba(150,80,0,.35),0 10px 26px rgba(245,165,36,.36)}
+.b.d{color:#ffb3b3;border-color:rgba(255,107,107,.5);background:radial-gradient(130% 90% at 15% -30%,rgba(255,255,255,.2),transparent 55%),linear-gradient(180deg,rgba(255,107,107,.20),rgba(255,107,107,.07))}
+.b.r{border-color:rgba(255,190,190,.7);background:linear-gradient(180deg,#ff8c8c,#ff6b6b 60%,#e04e4e);box-shadow:inset 0 1px 0 rgba(255,255,255,.6),0 10px 26px rgba(255,107,107,.35)}
+.b.ble{border-color:rgba(170,210,255,.7);background:linear-gradient(180deg,#5b9dff,#2b80ff 60%,#1d63d6);box-shadow:inset 0 1px 0 rgba(255,255,255,.55),0 10px 26px rgba(43,128,255,.35)}
+.x{border-radius:999px;border-color:rgba(255,255,255,.24);background:linear-gradient(180deg,rgba(255,255,255,.12),rgba(255,255,255,.04));-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);box-shadow:inset 1px 1px 0 rgba(255,255,255,.3)}
+
+/* ---------- campos ---------- */
+input,select{border-radius:18px;border:1px solid rgba(255,255,255,.20);background:linear-gradient(180deg,rgba(0,0,0,.30),rgba(0,0,0,.16));-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);box-shadow:inset 0 2px 7px rgba(0,0,0,.38),inset 0 -1px 0 rgba(255,255,255,.14);transition:border-color .2s,box-shadow .2s}
+input:focus,select:focus{border-color:rgba(245,165,36,.85);box-shadow:inset 0 2px 7px rgba(0,0,0,.38),0 0 0 4px rgba(245,165,36,.18)}
+
+/* ---------- aviso (toast) ---------- */
+#toast{bottom:calc(92px + env(safe-area-inset-bottom));border-radius:24px;border:1px solid rgba(61,220,151,.55);
+  background:radial-gradient(140% 120% at 10% -40%,rgba(255,255,255,.22),transparent 55%),linear-gradient(160deg,rgba(61,220,151,.30),rgba(18,56,43,.60));
+  -webkit-backdrop-filter:blur(24px) saturate(190%);backdrop-filter:blur(24px) saturate(190%);box-shadow:0 14px 36px rgba(0,0,0,.45),inset 1px 1px 0 rgba(255,255,255,.4)}
+#toast.bad{border-color:rgba(255,107,107,.6);background:radial-gradient(140% 120% at 10% -40%,rgba(255,255,255,.2),transparent 55%),linear-gradient(160deg,rgba(255,107,107,.34),rgba(58,23,23,.62))}
+
+/* ---------- histórico: abas, chips, calendário ---------- */
+.tabs{padding:5px;gap:4px;border-radius:999px;border:1px solid rgba(255,255,255,.22);background:linear-gradient(180deg,rgba(0,0,0,.22),rgba(255,255,255,.05));box-shadow:inset 0 2px 6px rgba(0,0,0,.3),inset 0 -1px 0 rgba(255,255,255,.14)}
+.tabs button{border-radius:999px;border-color:transparent;background:transparent;transition:background .25s,box-shadow .25s,color .25s}
+.tabs button.on{color:#1b1200;border-color:rgba(255,235,190,.7);background:radial-gradient(130% 90% at 15% -30%,rgba(255,255,255,.5),transparent 55%),linear-gradient(180deg,#ffc95f,#f5a524 60%,#e5940f);box-shadow:inset 0 1px 0 rgba(255,255,255,.65),0 6px 16px rgba(245,165,36,.32)}
+.chips button{border-color:rgba(255,255,255,.22);background:linear-gradient(180deg,rgba(255,255,255,.12),rgba(255,255,255,.04));-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);box-shadow:inset 1px 1px 0 rgba(255,255,255,.28)}
+.chips button.on{border-color:rgba(245,165,36,.7);background:linear-gradient(180deg,rgba(245,165,36,.26),rgba(245,165,36,.08));box-shadow:inset 1px 1px 0 rgba(255,235,190,.45),0 0 18px rgba(245,165,36,.18)}
+.oleo{border-radius:20px;border-color:rgba(255,255,255,.22);background:linear-gradient(180deg,rgba(0,0,0,.26),rgba(0,0,0,.12));box-shadow:inset 0 2px 6px rgba(0,0,0,.3),inset 0 -1px 0 rgba(255,255,255,.12)}
+.cal-h button{border-radius:50%;border-color:rgba(255,255,255,.24);background:linear-gradient(180deg,rgba(255,255,255,.14),rgba(255,255,255,.05));-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);box-shadow:inset 1px 1px 0 rgba(255,255,255,.34),0 6px 14px rgba(0,0,0,.25)}
+.cd{border-radius:16px;background:linear-gradient(180deg,rgba(255,255,255,.09),rgba(255,255,255,.03));box-shadow:inset 1px 1px 0 rgba(255,255,255,.16)}
+.cd.has{background:linear-gradient(180deg,rgba(245,165,36,.26),rgba(245,165,36,.08))}
+.cd.sel{color:#1b1200;border-color:rgba(255,235,190,.7);background:linear-gradient(180deg,#ffc95f,#f5a524 60%,#e5940f);box-shadow:inset 0 1px 0 rgba(255,255,255,.65),0 6px 16px rgba(245,165,36,.35)}
+.dy{border-radius:18px;border-color:rgba(255,255,255,.2);background:linear-gradient(180deg,rgba(255,255,255,.10),rgba(255,255,255,.03));box-shadow:inset 1px 1px 0 rgba(255,255,255,.22)}
+.dy.sel{border-color:rgba(245,165,36,.75);background:linear-gradient(180deg,rgba(245,165,36,.26),rgba(245,165,36,.08))}
+
+/* ---------- acessibilidade e compatibilidade ---------- */
+@media (prefers-reduced-motion:reduce){body::before{animation:none}.b,#nav button,.esp-card{transition:none}}
+@media (prefers-reduced-transparency:reduce){
+  .g,.b,#nav,.esp-card,#toast,input,select,.tabs,.chips button,.steps span,.cd,.dy{-webkit-backdrop-filter:none;backdrop-filter:none}
+  .g,#nav,.esp-card{background:#16202c}
+}
+@supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))){
+  .g,#nav,.esp-card{background:#16202c}
+  #toast{background:#12382b}#toast.bad{background:#3a1717}
+}
