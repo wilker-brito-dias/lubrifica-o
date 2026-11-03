@@ -1,7 +1,7 @@
-const V='hf28-v6',SH=['./','index.html','historico.html','admin.html','gh.js','manifest.webmanifest','icon-192.png','icon-512.png'];
+const V='hf28-v9',SH=['./','index.html','historico.html','admin.html','gh.js','glass.css','manifest.webmanifest','icon-192.png','icon-512.png'];
 self.addEventListener('install',e=>e.waitUntil(caches.open(V).then(c=>c.addAll(SH)).then(()=>self.skipWaiting())));
 self.addEventListener('activate',e=>e.waitUntil(caches.keys().then(k=>Promise.all(k.filter(x=>x!==V).map(x=>caches.delete(x)))).then(()=>self.clients.claim())));
-const keep=(q,r)=>{const c=r.clone();caches.open(V).then(x=>x.put(q,c));return r};
+const keep=(q,r)=>{if(r&&r.ok){const c=r.clone();caches.open(V).then(x=>x.put(q,c))}return r};
 self.addEventListener('fetch',e=>{
   const u=new URL(e.request.url);
   if(e.request.method!=='GET'||(u.origin!==self.location.origin&&u.hostname!=='cdnjs.cloudflare.com'))return;
