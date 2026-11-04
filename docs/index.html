@@ -476,19 +476,17 @@ function login(){
     toast('Muitas tentativas. Aguarde '+Math.ceil((bloq-Date.now())/1000)+' segundos.',1);
     return;
   }
+
   if($('#lu').value===GH.AUTH.u && $('#lp').value===GH.AUTH.p){
     tent=0;
     sessionStorage.setItem('auth','1');
-    // Sem GitHub configurado neste dispositivo, abre os Ajustes.
-    if(!GH.ok()){
-      toast('Login aceito! Configure o GitHub neste dispositivo antes de abrir a Administração.',1);
-      cfg();
-      return;
-    }
-    // Com GitHub configurado, entra diretamente na Administração.
-    location.href='admin.html';
+    toast('Login aceito. Confira ou configure o vínculo GitHub neste dispositivo.');
+    // Não redireciona para admin: o operador precisa conseguir preencher
+    // repositório, branch e token neste próprio navegador.
+    cfg();
     return;
   }
+
   if(++tent>=3){
     bloq=Date.now()+30000;
     tent=0;
@@ -501,11 +499,19 @@ async function cfg(){
     $('#main').innerHTML='<section class="g"><h1>Ajustes</h1><p class="m">Entre para alterar as configurações.</p><label>Usuário<input id="lu" autocomplete="off" autocapitalize="off"></label><label>Senha<input id="lp" type="password" autocomplete="off"></label><button class="b p" onclick="login()">Entrar</button></section>';
     return;
   }
-  const c=GH.cfg(),n=(await all()).filter(r=>!r.sincronizado).length;
-  $('#main').innerHTML='<section class="g"><h1>Ajustes</h1><p class="m">'+(n?n+' abastecimento(s) aguardando envio.':'Tudo enviado ao banco do GitHub.')+'</p>'
+  const c=GH.cfg();
+  let n=0, localDbAviso='';
+  try {
+    if (db) n=(await all()).filter(r=>!r.sincronizado).length;
+    else localDbAviso='<p class="warn">Banco local ainda não inicializado. As configurações do GitHub continuam disponíveis.</p>';
+  } catch(e) {
+    localDbAviso='<p class="warn">Não consegui ler os registros locais: '+esc((e&&e.message)||e)+'. As configurações do GitHub continuam disponíveis.</p>';
+  }
+  const repoPublico = typeof GH.publico === 'function' && GH.publico();
+  $('#main').innerHTML='<section class="g"><h1>Ajustes</h1>'+localDbAviso+'<p class="m">'+(n?n+' abastecimento(s) aguardando envio.':'Tudo enviado ao banco do GitHub.')+'</p>'
     +(n?'<button class="b p" onclick="enviar()">Enviar pendentes agora</button>':'')
     +(dp?'<button class="b" onclick="instalar()">Instalar como app</button>':'')+'<button class="b" onclick="sair()">Sair dos ajustes</button></section>'
-    +(GH.publico()?'<section class="g"><p class="warn"><b>O repositório dos dados é público.</b> Nomes, códigos de crachá e fotos podem ser vistos por qualquer pessoa. Mova o banco e as fotos para um repositório privado.</p></section>':'')+'<section class="g"><h2>Banco no GitHub</h2><label>Repositório dos dados<input id="gr" value="'+esc(c.repo||'')+'"></label><label>Branch<input id="gb" value="'+esc(c.branch||'main')+'"></label><label>Token de acesso<input id="gt" type="password" value="'+esc(c.token||'')+'" autocomplete="off"></label><button class="b" onclick="saveGh()">Salvar e testar</button></section>'
+    +(repoPublico?'<section class="g"><p class="warn"><b>O repositório dos dados é público.</b> Nomes, códigos de crachá e fotos podem ser vistos por qualquer pessoa. Mova o banco e as fotos para um repositório privado.</p></section>':'')+'<section class="g"><h2>Banco no GitHub</h2><label>Repositório dos dados<input id="gr" value="'+esc(c.repo||'')+'"></label><label>Branch<input id="gb" value="'+esc(c.branch||'main')+'"></label><label>Token de acesso<input id="gt" type="password" value="'+esc(c.token||'')+'" autocomplete="off"></label><button class="b" onclick="saveGh()">Salvar e testar</button></section>'
     +'<section class="g"><h2>Bomba (Bluetooth)</h2><p class="m">A chave precisa ser igual à gravada no ESP32 (SEGREDO), com pelo menos 16 caracteres.</p><label>Chave secreta<input id="pk" type="password" value="'+esc(PUMP.cfg().key||'')+'" autocomplete="off"></label><button class="b" onclick="saveBomba()">Salvar e parear</button></section>'
     +'<section class="g"><h2>Arquivos na pasta Downloads</h2><button class="b" onclick="togCsv()">CSV da hora ao salvar: '+(localStorage.getItem('csv')==='0'?'desligado':'ligado')+'</button></section>'
     +'<section class="g"><h2>Cadastros</h2><p class="m">'+Object.keys(reg.w).length+' pessoas e '+Object.keys(reg.m).length+' máquinas, vindas do banco.</p><button class="b" onclick="atualizarCad()">Atualizar cadastros</button><button class="b d" onclick="limparLocal()">Limpar cadastros deste tablet</button><button class="b" onclick="location.href=\'admin.html\'">Administração</button></section>';
