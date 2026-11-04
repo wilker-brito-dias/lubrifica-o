@@ -49,6 +49,106 @@ async checkPrivate(){
   return privado;
 },
 
+// Seleção de óleo local: usada pela tela inicial e pelo histórico.
+oleoLocal(){
+  try {
+    return JSON.parse(localStorage.getItem('oleo') || 'null');
+  } catch(e) {
+    return null;
+  }
+},
+
+// UID do óleo cuja troca ainda aguarda sincronização.
+oleoPend(){
+  return localStorage.getItem('oleoPend') || '';
+},
+
+// Confirmação visual temporária após sincronizar uma troca de óleo.
+oleoRecente(){
+  const raw = localStorage.getItem('oleoOk');
+  if (!raw) return false;
+  try {
+    const info = JSON.parse(raw);
+    return !!(info && Number.isFinite(info.at) && Date.now() - info.at < 10000);
+  } catch(e) {
+    return raw === '1';
+  }
+},
+
+// Envia ao banco a seleção de óleo feita na tela inicial.
+// A atualização é idempotente para permitir nova tentativa após conflito HTTP 409.
+async flushOleo(){
+  const uid = this.oleoPend();
+  if (!uid || !this.ok()) return false;
+
+  await this.edit(d => {
+    const st = d.prepare('SELECT uid FROM oleos WHERE uid = ?');
+    st.bind([uid]);
+    const exists = st.step();
+    st.free();
+
+    if (!exists) {
+      throw new Error('O óleo selecionado não foi encontrado no banco. Atualize os cadastros antes de tentar novamente.');
+    }
+
+    d.run('UPDATE oleos SET ativo = 0');
+    d.run('UPDATE oleos SET ativo = 1 WHERE uid = ?', [uid]);
+  }, 'óleo: atualizar óleo em uso');
+
+  // Não apaga uma seleção mais recente feita enquanto a gravação estava ocorrendo.
+  if (this.oleoPend() === uid) {
+    localStorage.removeItem('oleoPend');
+    localStorage.setItem('oleoOk', JSON.stringify({uid, at:Date.now()}));
+  }
+  return true;
+},
+
+// Aceita apenas caminhos de fotos gerados dentro da pasta fotos/.
+fotoOk(path){
+  return typeof path === 'string'
+    && /^fotos\/[A-Za-z0-9][A-Za-z0-9._-]*\.jpg$/i.test(path)
+    && !path.includes('..');
+},
+
+// Lista somente arquivos JPG válidos da pasta de fotos do repositório.
+async listFotos(){
+  if (!this.ok()) throw new Error('Configure o repositório e o token do GitHub nos Ajustes.');
+  const r = await fetch(this.u('fotos', 1), {
+    headers: this.h(),
+    cache: 'no-store'
+  });
+
+  if (r.status === 404) return [];
+  if (!r.ok) throw new Error('Não foi possível listar as fotos no GitHub (HTTP ' + r.status + ').');
+
+  const items = await r.json();
+  if (!Array.isArray(items)) return [];
+
+  return items
+    .filter(f => f && f.type === 'file' && this.fotoOk(f.path) && typeof f.sha === 'string')
+    .map(f => ({path:f.path, sha:f.sha, name:f.name, size:f.size}));
+},
+
+// Exclui uma foto usando o SHA validado retornado pela API do GitHub.
+async delSha(path, sha){
+  if (!this.fotoOk(path)) throw new Error('Caminho de foto inválido.');
+  if (typeof sha !== 'string' || !sha) throw new Error('SHA do arquivo ausente.');
+
+  const r = await fetch(this.u(path), {
+    method: 'DELETE',
+    headers: this.h(),
+    body: JSON.stringify({
+      message: 'remover foto ' + path,
+      sha,
+      branch: this.cfg().branch || undefined
+    })
+  });
+
+  if (r.status === 404) return false;
+  if (!r.ok) throw new Error('Não foi possível excluir a foto no GitHub (HTTP ' + r.status + ').');
+  return true;
+},
+
 _sql:null,
 
   async sql(){
@@ -93,8 +193,15 @@ _sql:null,
     }catch(e){throw new Error((e&&e.message)||String(e))}
   },
   async del(path){
-    const m=await fetch(this.u(path,1),{headers:this.h()});if(!m.ok)return;
-    await fetch(this.u(path),{method:'DELETE',headers:this.h(),body:JSON.stringify({message:'remove '+path,sha:(await m.json()).sha,branch:this.cfg().branch||undefined})});
+    if (!this.fotoOk(path)) throw new Error('Caminho de foto inválido.');
+    const m = await fetch(this.u(path, 1), {
+      headers: this.h(),
+      cache: 'no-store'
+    });
+    if (m.status === 404) return false;
+    if (!m.ok) throw new Error('Não foi possível localizar a foto no GitHub (HTTP ' + m.status + ').');
+    const item = await m.json();
+    return this.delSha(path, item.sha);
   },
   async push(rows,save){
     try{await this._push(rows,save)}catch(e){throw new Error((e&&e.message)||String(e))}
