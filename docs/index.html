@@ -468,11 +468,32 @@ async function saveBomba(){
 }
 
 function togCsv(){localStorage.setItem('csv',localStorage.getItem('csv')==='0'?'1':'0');cfg()}
+
 let tent=0,bloq=0;
+
 function login(){
-  if(Date.now()<bloq){toast('Muitas tentativas. Aguarde '+Math.ceil((bloq-Date.now())/1000)+' segundos.',1);return}
-  if($('#lu').value===GH.AUTH.u&&$('#lp').value===GH.AUTH.p){tent=0;sessionStorage.setItem('auth','1');cfg()}
-  else{if(++tent>=3){bloq=Date.now()+30000;tent=0}toast('Usuário ou senha incorretos.',1)}
+  if(Date.now()<bloq){
+    toast('Muitas tentativas. Aguarde '+Math.ceil((bloq-Date.now())/1000)+' segundos.',1);
+    return;
+  }
+  if($('#lu').value===GH.AUTH.u && $('#lp').value===GH.AUTH.p){
+    tent=0;
+    sessionStorage.setItem('auth','1');
+    // Sem GitHub configurado neste dispositivo, abre os Ajustes.
+    if(!GH.ok()){
+      toast('Login aceito! Configure o GitHub neste dispositivo antes de abrir a Administração.',1);
+      cfg();
+      return;
+    }
+    // Com GitHub configurado, entra diretamente na Administração.
+    location.href='admin.html';
+    return;
+  }
+  if(++tent>=3){
+    bloq=Date.now()+30000;
+    tent=0;
+  }
+  toast('Usuário ou senha incorretos.',1);
 }
 function sair(){sessionStorage.removeItem('auth');cfg()}
 async function cfg(){
