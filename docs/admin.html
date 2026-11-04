@@ -60,9 +60,27 @@ const qry=(d,q)=>{const st=d.prepare(q),o=[];while(st.step())o.push(st.getAsObje
 
 /* Acesso: usa o login feito em Ajustes */
 function lock(){
-  if(sessionStorage.getItem('auth')!=='1'||!GH.ok()){location.replace('index.html#ajustes');return}
+  // Primeiro verifica o login.
+  if(sessionStorage.getItem('auth')!=='1'){
+    location.replace('index.html#ajustes');
+    return;
+  }
+  // Depois verifica se o GitHub está configurado.
+  if(!GH.ok()){
+    box(
+      '<h1>Administração</h1>' +
+      '<p class="warn">Seu login foi aceito, mas este dispositivo ainda não tem o repositório e o token do GitHub configurados.</p>' +
+      '<p class="m">Entre em Ajustes, configure o GitHub e tente novamente.</p>' +
+      '<button class="b p" onclick="location.href=\'index.html#ajustes\'">' +
+      'Configurar GitHub' +
+      '</button>'
+    );
+    return;
+  }
+  // Tudo certo: carrega os dados administrativos.
   load();
 }
+
 
 /* Leitura e gravação */
 async function load(){
