@@ -10,12 +10,47 @@ const GH={
   ok(){const c=this.cfg();return !!(c.repo&&c.token)},
   h(raw){return{Authorization:'Bearer '+this.cfg().token,Accept:raw?'application/vnd.github.raw+json':'application/vnd.github+json'}},
   u(p,get){const c=this.cfg();return 'https://api.github.com/repos/'+c.repo+'/contents/'+p+(get&&c.branch?'?ref='+encodeURIComponent(c.branch):'')},
-  async test(){
-    const r=await fetch('https://api.github.com/repos/'+this.cfg().repo,{headers:this.h()});
-    if(!r.ok)throw new Error(r.status===404?'repositório não encontrado ou token sem acesso':r.status===401?'token inválido':'GitHub '+r.status);
-    return (await r.json()).private;
-  },
-  _sql:null,
+  
+async test(){
+  const r = await fetch(
+    'https://api.github.com/repos/' + this.cfg().repo,
+    { headers: this.h(), cache: 'no-store' }
+  );
+
+  if(!r.ok){
+    throw new Error(
+      r.status === 404
+        ? 'Repositório não encontrado ou token sem acesso.'
+        : r.status === 401
+        ? 'Token inválido ou revogado.'
+        : 'GitHub HTTP ' + r.status
+    );
+  }
+
+  return (await r.json()).private;
+},
+
+// Informa se o repositório foi identificado como público.
+publico(){
+  return this.cfg().repoPrivate === false;
+},
+
+// Testa o acesso e registra a visibilidade do repositório.
+async checkPrivate(){
+  const privado = await this.test();
+
+  const atual = this.cfg();
+
+  this.set({
+    ...atual,
+    repoPrivate: privado
+  });
+
+  return privado;
+},
+
+_sql:null,
+
   async sql(){
     if(this._sql)return this._sql;
     if(!window.initSqlJs)await new Promise((ok,no)=>{const s=document.createElement('script');s.src=CDN+'sql-wasm.js';s.onload=ok;s.onerror=()=>no(new Error('sem acesso ao SQL.js (precisa de internet na primeira vez)'));document.head.appendChild(s)});
