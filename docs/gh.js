@@ -37,16 +37,16 @@ publico(){
 
 // Testa o acesso e registra a visibilidade do repositório.
 async checkPrivate(){
-  const privado = await this.test();
-
-  const atual = this.cfg();
-
-  this.set({
-    ...atual,
-    repoPrivate: privado
-  });
-
-  return privado;
+  // Devolve true/false (repositório privado ou não) ou null se não foi possível testar
+  // (sem internet, token inválido, repositório errado). Quem chama decide o que mostrar.
+  try {
+    const privado = await this.test();
+    this.set({...this.cfg(), repoPrivate: privado});
+    return privado;
+  } catch(e) {
+    this.ultimoErro = (e && e.message) || String(e);
+    return null;
+  }
 },
 
 // Seleção de óleo local: usada pela tela inicial e pelo histórico.
