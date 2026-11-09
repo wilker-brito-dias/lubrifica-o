@@ -78,6 +78,8 @@ img{max-width:100%}
 .esp-status-wait{color:var(--acc);font-weight:700}
 .esp-icon svg{display:block}
 .run .tm{margin:.3em 0 .6em}
+.travado #nav button:not(.on){opacity:.45}
+details.sup{margin-top:14px}details.sup summary{cursor:pointer;color:var(--mut);min-height:44px;display:flex;align-items:center}
 </style>
 <link rel="stylesheet" href="glass.css">
 </head>
@@ -89,6 +91,33 @@ img{max-width:100%}
 <script>
 const $=s=>document.querySelector(s);
 const S={step:0,w:null,m:null,t0:null,t1:null,pump:null,manual:false,ol:null,auto:null,dur:null,miss:0,busy:false,cutting:false,keeping:false,salvandoOleo:false,why:null,photo:null,nfc:false,tab:'a'};
+
+/* ---------- Sessão de abastecimento: não se perde ao sair, voltar, recarregar ou fechar o app ---------- */
+const SES='ses',ADM='adm',LOCKMSG='Conclua o registro do abastecimento antes de sair desta tela.';
+function sesGet(){try{return JSON.parse(localStorage.getItem(SES)||'null')}catch(e){return null}}
+function sesPend(){return !!sesGet()}
+function sesSalva(extra){
+  const emUso=S.pump==='on'||S.pump==='fail'||S.pump==='starting';
+  const o=Object.assign({w:S.w,m:S.m,ol:S.ol,t0:S.t0&&S.t0.toISOString(),t1:S.t1&&S.t1.toISOString(),dur:S.dur,auto:S.auto,manual:S.manual,estado:emUso?'on':'parada',ult:Date.now()},extra||{});
+  localStorage.setItem(SES,JSON.stringify(o));
+}
+function sesTick(){const o=sesGet();if(o&&o.estado==='on'){o.ult=Date.now();localStorage.setItem(SES,JSON.stringify(o))}}
+function sesLimpa(){localStorage.removeItem(SES)}
+(function sesRestaura(){
+  const o=sesGet();if(!o||!o.w||!o.m||!o.t0)return;
+  S.w=o.w;S.m=o.m;S.ol=o.ol||null;S.t0=new Date(o.t0);S.manual=!!o.manual;S.auto=o.auto||null;S.step=3;S.pump='off';S.tab='a';
+  if(o.estado==='on'){   // o app fechou/recarregou/foi derrubado com a bomba ligada: o ESP32 já cortou sozinho; o último sinal de vida vira o fim
+    const fim=new Date(Math.max(Number(o.ult)||0,S.t0.getTime()));
+    S.t1=fim;S.dur=Math.max(0,Math.round((fim-S.t0)/1000));S.auto='sessão interrompida: o app foi fechado com a bomba ligada';
+    localStorage.setItem(SES,JSON.stringify(Object.assign(o,{estado:'parada',t1:fim.toISOString(),dur:S.dur,auto:S.auto})));
+  }else{S.t1=o.t1?new Date(o.t1):new Date(Number(o.ult)||Date.now());S.dur=o.dur!=null?o.dur:null}
+})();
+function travaUI(){
+  document.body.classList.toggle('travado',sesPend());
+  if(sesPend()&&!(history.state&&history.state.trava))history.pushState({trava:1},'');
+}
+addEventListener('popstate',()=>{if(sesPend()){history.pushState({trava:1},'');toast('Conclua o registro do abastecimento antes de sair.',1)}});
+addEventListener('beforeunload',e=>{if(sesPend()){e.preventDefault();e.returnValue=''}});
 const reg=JSON.parse(localStorage.getItem('reg')||'{"w":{},"m":{}}');
 const saveReg=()=>localStorage.setItem('reg',JSON.stringify(reg));
 const p2=n=>String(n).padStart(2,'0');
@@ -185,12 +214,12 @@ function startKeep(){
       const r=await PUMP.cmd('KEEP');
       if(S.pump!=='on'||S.cutting)return;
       if(r.j&&r.j.pump===0){autoStop(MOTIVOS[r.j.motivo]||r.j.motivo||'a bomba desligou',r.j.ultimo_ms);return}
-      if(r.status===200)S.miss=0;else if(++S.miss>=2)perdeu();
+      if(r.status===200){S.miss=0;sesTick()}else if(++S.miss>=2)perdeu();
     }finally{S.keeping=false}
   },2000);
 }
 function autoStop(m,ms){
-  stopKeep();S.pump='off';S.t1=S.t1||new Date();S.auto=m;S.dur=ms?Math.round(ms/1000):null;S.step=3;wake(false);render();
+  stopKeep();S.pump='off';S.t1=S.t1||new Date();S.auto=m;S.dur=ms?Math.round(ms/1000):null;S.step=3;wake(false);sesSalva();render();
   toast('A bomba parou: '+m+'.',1);
 }
 /* Sem resposta do ESP32 com a bomba ligada: ele mesmo corta em poucos segundos. Aqui só confirmamos. */
@@ -222,14 +251,15 @@ async function religar(){
 }
 async function liberar(){
   if(S.busy||S.pump==='on'||S.pump==='fail')return;
-  S.busy=true;S.pump='starting';render();
+  S.busy=true;S.pump='starting';S.ol=oleo();S.t0=new Date();S.t1=null;S.manual=false;S.auto=null;S.dur=null;
+  sesSalva();render();   // gravado ANTES de mandar ligar: se o app cair no meio, o abastecimento não some
   try{
     const r=await PUMP.cmd('ON',nm(S.w.name)+'|'+nm(S.m.name));
     if(r.status===200&&r.j&&r.j.pump===1){
-      S.pump='on';S.ol=oleo();S.t0=new Date();S.t1=null;S.manual=false;S.auto=null;S.dur=null;S.miss=0;
+      S.pump='on';S.ol=oleo();S.t0=new Date();S.t1=null;S.manual=false;S.auto=null;S.dur=null;S.miss=0;sesSalva();
       wake(true);startKeep();toast('Bomba ligada.');
     }else{
-      S.pump=null;
+      PUMP.cmd('OFF');S.pump=null;S.t0=null;sesLimpa();   // não ligou: garante desligada e não deixa sessão pendente
       toast(r.status===401?'A chave da bomba não confere com a do ESP32. Veja em Ajustes.':r.status===429?'O ESP32 bloqueou por tentativas erradas. Aguarde 30 segundos.':'Não consegui ligar a bomba. O ESP32 está conectado?',1);
     }
   }finally{S.busy=false;render()}
@@ -246,7 +276,7 @@ async function cortar(){
       await sleep(400);
     }
     if(r&&r.j&&r.j.pump===0){
-      S.pump='off';S.t1=S.t1||new Date();S.dur=r.j.ultimo_ms?Math.round(r.j.ultimo_ms/1000):null;S.step=3;wake(false);
+      S.pump='off';S.t1=S.t1||new Date();S.dur=r.j.ultimo_ms?Math.round(r.j.ultimo_ms/1000):null;S.step=3;wake(false);sesSalva();
       toast('Bomba parada. Agora registre os litros.');
     }else{
       S.pump='fail';S.t1=S.t1||new Date();toast('NÃO CONSEGUI CONFIRMAR A PARADA PELO BLUETOOTH.',1);
@@ -255,7 +285,7 @@ async function cortar(){
 }
 function cortarManual(){
   if(S.pump!=='fail')return;
-  S.pump='off';S.manual=true;S.t1=S.t1||new Date();S.step=3;wake(false);render();
+  S.pump='off';S.manual=true;S.t1=S.t1||new Date();S.step=3;wake(false);sesSalva();render();
 }
 document.addEventListener('visibilitychange',()=>{if(document.hidden&&S.pump==='on')cortar()});
 
@@ -296,7 +326,7 @@ addEventListener('online',()=>sync().then(()=>toast('Pendentes enviados.')).catc
 
 /* ---------- NFC ---------- */
 function tag(id){
-  if(S.step>1)return;
+  if(S.step>1||sesPend())return;
   const k=S.step===0?'w':'m',name=lookup(k,id);
   if(!name){toast((k==='w'?'Crachá':'Totem')+' não cadastrado'+(isAdmin()&&id?' ('+id+')':'')+'. Peça ao administrador.',1);return}
   if(k==='w')S.w={id,name};else S.m={id,name};
@@ -356,6 +386,7 @@ function stopNFC(){
   render();toast('Leitura NFC parada.');
 }
 async function startNFC(){
+  if(sesPend()){toast('Registre o abastecimento pendente antes de iniciar outro.',1);return}
   if(!needPump())return;
   if(!('NDEFReader' in window)){toast('Navegador sem NFC. Use Chrome Android.',1);return}
   try{
@@ -371,16 +402,27 @@ async function startNFC(){
 }
 
 /* ---------- Fluxo ---------- */
-function nav(u){if(pumpBusy()){toast('Corte a bomba antes de sair desta tela.',1);return}if(S.salvandoOleo){toast('Aguarde: salvando a troca de óleo.',1);return}location.href=u}
-function go(t){if(pumpBusy()){toast('Corte a bomba antes de sair desta tela.',1);return}if(S.salvandoOleo){toast('Aguarde: salvando a troca de óleo.',1);return}S.tab=t;render()}
+function nav(u){if(sesPend()){toast(LOCKMSG,1);return}if(pumpBusy()){toast('Corte a bomba antes de sair desta tela.',1);return}if(S.salvandoOleo){toast('Aguarde: salvando a troca de óleo.',1);return}location.href=u}
+function go(t){if(sesPend()&&t!==S.tab){toast(LOCKMSG,1);return}if(pumpBusy()){toast('Corte a bomba antes de sair desta tela.',1);return}if(S.salvandoOleo){toast('Aguarde: salvando a troca de óleo.',1);return}S.tab=t;render()}
 function reset(){
   if(pumpBusy()){toast('Corte a bomba antes de sair.',1);return}
+  sesLimpa();S.fhash=null;
   Object.assign(S,{step:0,w:null,m:null,t0:null,t1:null,pump:null,manual:false,ol:null,auto:null,dur:null,miss:0,photo:null});
   render();
 }
+async function fotoHash(u){const h=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(u));return[...new Uint8Array(h)].map(x=>x.toString(16).padStart(2,'0')).join('')}
 function photo(i){
-  const f=i.files[0];if(!f)return;const im=new Image();
-  im.onload=()=>{const k=Math.min(1,720/Math.max(im.width,im.height)),c=document.createElement('canvas');c.width=im.width*k;c.height=im.height*k;c.getContext('2d').drawImage(im,0,0,c.width,c.height);S.photo=c.toDataURL('image/jpeg',.6);$('#pv').src=S.photo;$('#pv').hidden=false;URL.revokeObjectURL(im.src)};
+  const f=i.files[0];if(!f)return;
+  const lm=f.lastModified||Date.now(),agora=Date.now();
+  if(agora-lm>20*60000||(S.t0&&lm<S.t0.getTime()-60000)){i.value='';S.photo=null;S.fhash=null;const pv=$('#pv');if(pv)pv.hidden=true;toast('A foto precisa ser tirada agora, com a câmera, neste abastecimento. Foto antiga ou da galeria não vale.',1);return}
+  const im=new Image();
+  im.onload=async()=>{
+    const k=Math.min(1,720/Math.max(im.width,im.height)),c=document.createElement('canvas');c.width=im.width*k;c.height=im.height*k;c.getContext('2d').drawImage(im,0,0,c.width,c.height);
+    const url=c.toDataURL('image/jpeg',.6),h=await fotoHash(url);URL.revokeObjectURL(im.src);
+    if(JSON.parse(localStorage.getItem('fh')||'[]').includes(h)){i.value='';S.photo=null;S.fhash=null;$('#pv').hidden=true;toast('Esta foto já foi usada em outro abastecimento. Tire uma nova do visor.',1);return}
+    S.photo=url;S.fhash=h;$('#pv').src=url;$('#pv').hidden=false;
+  };
+  im.onerror=()=>{i.value='';toast('Não consegui ler a foto. Tire outra.',1)};
   im.src=URL.createObjectURL(f);
 }
 const secs=()=>S.dur!=null?S.dur:Math.max(0,Math.round((S.t1-S.t0)/1000));
@@ -388,14 +430,31 @@ const dur=()=>{const s=secs();return p2(Math.floor(s/60))+':'+p2(s%60)};
 async function save(){
   const l=parseFloat(($('#lt').value||'').replace(',','.'));
   if(!(l>0)){toast('Informe os litros abastecidos.',1);return}
+  const o=oleoAtual(),lim=(o&&o.bombona>0)?o.bombona:1000;
+  if(l>lim){toast('Valor acima do volume de uma bombona ('+lim+' L). Confira os litros.',1);return}
   if(!S.photo){toast('Tire a foto do visor de dosagem. Ela é obrigatória.',1);return}
-  if(!S.t0||!S.t1){toast('Abastecimento sem registro de tempo. Cancele e refaça.',1);return}
-  const fim=S.t1,o=oleoAtual();
-  const r={uid:crypto.randomUUID(),inicio:S.t0.toISOString(),fim:fim.toISOString(),hora:hk(fim),duracao_s:secs(),colaborador:S.w.name,cracha_id:S.w.id,maquina:S.m.name,totem_id:S.m.id,produto:prod(),oleo:(o||{}).nome||'HF28',preco:o&&o.preco!=null?o.preco:null,litros:l,obs:(S.manual?'[parada manual] ':'')+(S.auto?'[parada automática: '+S.auto+'] ':'')+$('#ob').value.trim(),foto:S.photo,sincronizado:false};
+  if(!S.t0||!S.t1){toast('Abastecimento sem registro de tempo. Chame o supervisor.',1);return}
+  const vz=parseFloat(localStorage.getItem('vazaoMax')||'0'),seg=secs();
+  const alerta=(vz>0&&l>vz*(seg/60)*1.3+0.5)?'[ALERTA: '+l+' L em '+dur()+' passa da vazão máxima da bomba ('+vz+' L/min)] ':'';
+  const fim=S.t1;
+  const r={uid:crypto.randomUUID(),inicio:S.t0.toISOString(),fim:fim.toISOString(),hora:hk(fim),duracao_s:seg,colaborador:S.w.name,cracha_id:S.w.id,maquina:S.m.name,totem_id:S.m.id,produto:prod(),oleo:(o||{}).nome||'HF28',preco:o&&o.preco!=null?o.preco:null,litros:l,obs:alerta+(S.manual?'[parada manual] ':'')+(S.auto?'[parada automática: '+S.auto+'] ':'')+$('#ob').value.trim(),foto:S.photo,sincronizado:false};
   try{r.id=await put(r)}catch(e){toast('Erro ao gravar no banco: '+e.message,1);return}
+  sesLimpa();
+  if(S.fhash){const fh=JSON.parse(localStorage.getItem('fh')||'[]');fh.push(S.fhash);localStorage.setItem('fh',JSON.stringify(fh.slice(-500)))}
   if(localStorage.getItem('csv')!=='0')await exportHour(r.hora,r);
   reset();toast('Salvando no banco do GitHub...');
   try{await sync();toast('Salvo no banco do GitHub.')}catch(e){toast('Salvo no tablet. Envio pendente: '+e.message,1)}
+}
+async function descartar(){
+  if(Date.now()<bloq){toast('Muitas tentativas. Aguarde.',1);return}
+  const u=$('#du').value,p=$('#dp').value,mot=$('#dm').value.trim();
+  if(mot.length<5){toast('Informe o motivo do descarte (mínimo 5 caracteres).',1);return}
+  if(!localStorage.getItem(ADM)||!(await credOk(u,p))){if(++tent>=3){bloq=Date.now()+30000;tent=0}toast('Supervisor ou senha incorretos (vale só a senha própria, não a padrão).',1);return}
+  tent=0;const fim=S.t1||new Date(),o=oleoAtual();
+  const r={uid:crypto.randomUUID(),inicio:S.t0.toISOString(),fim:fim.toISOString(),hora:hk(fim),duracao_s:secs(),colaborador:S.w.name,cracha_id:S.w.id,maquina:S.m.name,totem_id:S.m.id,produto:prod(),oleo:(o||{}).nome||'HF28',preco:o&&o.preco!=null?o.preco:null,litros:0,obs:'[DESCARTADO pelo supervisor '+u+': '+mot+'] '+(S.auto?'[parada automática: '+S.auto+'] ':''),foto:'',sincronizado:false};
+  try{r.id=await put(r)}catch(e){toast('Erro ao gravar: '+e.message,1);return}
+  sesLimpa();reset();toast('Registro descartado e gravado com o motivo.');
+  try{await sync()}catch(e){}
 }
 
 /* ---------- Telas ---------- */
@@ -428,14 +487,16 @@ function stepHtml(){
       +'<button class="b d" onclick="cortarManual()">Já parei a bomba manualmente</button></section>';
     return'<section class="g c">'+quem+'<p class="warn">Não consegui ligar a bomba. O ESP32 está conectado?</p><button class="b p" onclick="liberar()">Tentar de novo</button><button class="b" onclick="reset()">Cancelar</button></section>';
   }
-  return'<section class="g"><h1>Registrar abastecimento</h1><p class="m">'+esc(S.w.name)+' na máquina '+esc(S.m.name)+'. Bomba ligada por '+dur()+(S.manual?' (parada manual)':'')+(S.auto?' (parada automática: '+esc(S.auto)+')':'')+'.</p>'
+  return'<section class="g"><h1>Registrar abastecimento</h1><p class="warn"><b>Registro obrigatório.</b> Informe os litros e tire a foto do visor. Não dá para sair desta tela antes de salvar.</p><p class="m">'+esc(S.w.name)+' na máquina '+esc(S.m.name)+'. Bomba ligada por '+dur()+(S.manual?' (parada manual)':'')+(S.auto?' (parada automática: '+esc(S.auto)+')':'')+'.</p>'
     +'<label>Litros abastecidos<input id="lt" type="number" inputmode="decimal" step="0.01" min="0" placeholder="0,00"></label>'
     +'<label>Foto do visor de dosagem (obrigatória)<input id="ph" type="file" accept="image/*" capture="environment" onchange="photo(this)"></label>'
     +'<img id="pv" alt="Foto do visor" '+(S.photo?'src="'+S.photo+'"':'hidden')+'>'
     +'<label>Observação (opcional)<input id="ob" type="text"></label>'
-    +'<button class="b p" onclick="save()">Salvar abastecimento</button></section>';
+    +'<button class="b p" onclick="save()">Salvar abastecimento</button>'
+    +'<details class="sup"><summary>Supervisor: descartar este registro</summary><p class="m small">Só o supervisor, com a senha própria. O descarte fica gravado no histórico, com o motivo.</p><label>Usuário<input id="du" autocomplete="off" autocapitalize="off"></label><label>Senha<input id="dp" type="password" autocomplete="off"></label><label>Motivo<input id="dm"></label><button class="b d" onclick="descartar()">Descartar e registrar o motivo</button></details></section>';
 }
 function render(){
+  travaUI();
   document.querySelectorAll('#nav button').forEach(b=>b.classList.toggle('on',b.dataset.t===S.tab));
   if(S.tab==='c')return cfg();
   const L=['Crachá','Máquina','Liberar Bomba','Registrar'];
@@ -457,6 +518,7 @@ async function saveGh(){
   toast(p?'Conectado ao repositório privado.':'Conectado, mas o repositório é PÚBLICO: nomes, crachás e fotos ficam visíveis a todos.',!p);cfg();
 }
 async function saveBomba(){
+  const vz=parseFloat(($('#vz').value||'').replace(',','.'));if(vz>0)localStorage.setItem('vazaoMax',String(vz));else localStorage.removeItem('vazaoMax');
   const k=$('#pk').value.trim();
   if(k.length<16){toast('A chave precisa ter pelo menos 16 caracteres.',1);return}
   localStorage.setItem('pump',JSON.stringify({key:k}));
@@ -471,27 +533,40 @@ function togCsv(){localStorage.setItem('csv',localStorage.getItem('csv')==='0'?'
 
 let tent=0,bloq=0;
 
-function login(){
-  if(Date.now()<bloq){
-    toast('Muitas tentativas. Aguarde '+Math.ceil((bloq-Date.now())/1000)+' segundos.',1);
-    return;
-  }
-
-  if($('#lu').value===GH.AUTH.u && $('#lp').value===GH.AUTH.p){
+async function hashSenha(u,p,salt){
+  const enc=new TextEncoder(),k=await crypto.subtle.importKey('raw',enc.encode(u+'\u0000'+p),'PBKDF2',false,['deriveBits']);
+  const bits=await crypto.subtle.deriveBits({name:'PBKDF2',hash:'SHA-256',salt:Uint8Array.from(atob(salt),c=>c.charCodeAt(0)),iterations:150000},k,256);
+  return btoa(String.fromCharCode(...new Uint8Array(bits)));
+}
+async function credOk(u,p){
+  let a=null;try{a=JSON.parse(localStorage.getItem(ADM)||'null')}catch(e){}
+  if(!a)return u===GH.AUTH.u&&p===GH.AUTH.p;
+  return u===a.u&&await hashSenha(u,p,a.s)===a.h;
+}
+async function login(){
+  if(Date.now()<bloq){toast('Muitas tentativas. Aguarde '+Math.ceil((bloq-Date.now())/1000)+' segundos.',1);return}
+  if(await credOk($('#lu').value,$('#lp').value)){
     tent=0;
-    sessionStorage.setItem('auth','1');
-    toast('Login aceito. Confira ou configure o vínculo GitHub neste dispositivo.');
-    // Não redireciona para admin: o operador precisa conseguir preencher
-    // repositório, branch e token neste próprio navegador.
-    cfg();
-    return;
+    if(!localStorage.getItem(ADM)){sessionStorage.setItem('pre','1');senhaForm();return}   // senha padrão: só serve para definir a própria
+    sessionStorage.setItem('auth','1');toast('Login aceito. Confira ou configure o vínculo GitHub neste dispositivo.');cfg();return;
   }
-
-  if(++tent>=3){
-    bloq=Date.now()+30000;
-    tent=0;
-  }
+  if(++tent>=3){bloq=Date.now()+30000;tent=0}
   toast('Usuário ou senha incorretos.',1);
+}
+function senhaForm(){
+  if(sessionStorage.getItem('pre')!=='1'&&!isAdmin())return;
+  $('#main').innerHTML='<section class="g"><h1>Defina a senha do administrador</h1><p class="warn">A senha padrão deixa de valer depois disto. Anote em lugar seguro: se esquecer, só apagando os dados do site neste tablet.</p><label>Novo usuário (mínimo 4 caracteres)<input id="nu" autocomplete="off" autocapitalize="off"></label><label>Nova senha (mínimo 8 caracteres)<input id="np" type="password" autocomplete="off"></label><label>Repita a senha<input id="np2" type="password" autocomplete="off"></label><button class="b p" onclick="salvaSenha()">Salvar senha</button></section>';
+}
+async function salvaSenha(){
+  if(sessionStorage.getItem('pre')!=='1'&&!isAdmin())return;
+  const u=$('#nu').value.trim(),pw=$('#np').value,pr=$('#np2').value;
+  if(u.length<4){toast('O usuário precisa ter pelo menos 4 caracteres.',1);return}
+  if(pw.length<8){toast('A senha precisa ter pelo menos 8 caracteres.',1);return}
+  if(pw!==pr){toast('As senhas não são iguais.',1);return}
+  if(pw===GH.AUTH.p||u===GH.AUTH.u||pw===u){toast('Escolha usuário e senha diferentes dos padrões.',1);return}
+  const sal=btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(16))));
+  localStorage.setItem(ADM,JSON.stringify({u,s:sal,h:await hashSenha(u,pw,sal)}));
+  sessionStorage.removeItem('pre');sessionStorage.setItem('auth','1');toast('Senha do administrador definida.');cfg();
 }
 function sair(){sessionStorage.removeItem('auth');cfg()}
 async function cfg(){
@@ -512,9 +587,9 @@ async function cfg(){
     +(n?'<button class="b p" onclick="enviar()">Enviar pendentes agora</button>':'')
     +(dp?'<button class="b" onclick="instalar()">Instalar como app</button>':'')+'<button class="b" onclick="sair()">Sair dos ajustes</button></section>'
     +(repoPublico?'<section class="g"><p class="warn"><b>O repositório dos dados é público.</b> Nomes, códigos de crachá e fotos podem ser vistos por qualquer pessoa. Mova o banco e as fotos para um repositório privado.</p></section>':'')+'<section class="g"><h2>Banco no GitHub</h2><label>Repositório dos dados<input id="gr" value="'+esc(c.repo||'')+'"></label><label>Branch<input id="gb" value="'+esc(c.branch||'main')+'"></label><label>Token de acesso<input id="gt" type="password" value="'+esc(c.token||'')+'" autocomplete="off"></label><button class="b" onclick="saveGh()">Salvar e testar</button></section>'
-    +'<section class="g"><h2>Bomba (Bluetooth)</h2><p class="m">A chave precisa ser igual à gravada no ESP32 (SEGREDO), com pelo menos 16 caracteres.</p><label>Chave secreta<input id="pk" type="password" value="'+esc(PUMP.cfg().key||'')+'" autocomplete="off"></label><button class="b" onclick="saveBomba()">Salvar e parear</button></section>'
+    +'<section class="g"><h2>Bomba (Bluetooth)</h2><p class="m">A chave precisa ser igual à gravada no ESP32 (SEGREDO), com pelo menos 16 caracteres.</p><label>Chave secreta<input id="pk" type="password" value="'+esc(PUMP.cfg().key||'')+'" autocomplete="off"></label><label>Vazão máxima da bomba em L/min (opcional: alerta litros incoerentes com o tempo)<input id="vz" type="number" inputmode="decimal" step="0.1" min="0" value="'+esc(localStorage.getItem('vazaoMax')||'')+'"></label><button class="b" onclick="saveBomba()">Salvar e parear</button></section>'
     +'<section class="g"><h2>Arquivos na pasta Downloads</h2><button class="b" onclick="togCsv()">CSV da hora ao salvar: '+(localStorage.getItem('csv')==='0'?'desligado':'ligado')+'</button></section>'
-    +'<section class="g"><h2>Cadastros</h2><p class="m">'+Object.keys(reg.w).length+' pessoas e '+Object.keys(reg.m).length+' máquinas, vindas do banco.</p><button class="b" onclick="atualizarCad()">Atualizar cadastros</button><button class="b d" onclick="limparLocal()">Limpar cadastros deste tablet</button><button class="b" onclick="location.href=\'admin.html\'">Administração</button></section>';
+    +'<section class="g"><h2>Cadastros</h2><p class="m">'+Object.keys(reg.w).length+' pessoas e '+Object.keys(reg.m).length+' máquinas, vindas do banco.</p><button class="b" onclick="atualizarCad()">Atualizar cadastros</button><button class="b d" onclick="limparLocal()">Limpar cadastros deste tablet</button><button class="b" onclick="location.href=\'admin.html\'">Administração</button><button class="b" onclick="senhaForm()">Trocar a senha do administrador</button></section>';
 }
 async function limparLocal(){
   if(!confirm('Apagar as pessoas e máquinas guardadas neste tablet e baixar de novo do banco? Precisa de internet.'))return;
@@ -543,7 +618,7 @@ async function atualizarCad(quiet){
 addEventListener('online',()=>atualizarCad(1));
 atualizarCad(1);
 if(GH.ok())GH.checkPrivate();
-if(location.hash==='#ajustes')S.tab='c';
+if(location.hash==='#ajustes'&&!sesPend())S.tab='c';
 if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js');
 setInterval(()=>{
   if(S.pump!=='on'||!S.t0)return;
