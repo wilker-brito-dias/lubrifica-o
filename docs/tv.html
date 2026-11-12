@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://api.github.com https://cdnjs.cloudflare.com; object-src 'none'; base-uri 'none'; form-action 'self'">
+<meta name="color-scheme" content="dark">
+<title>Painel de abastecimento</title>
+<style>
+:root{--bg:#0d1520;--ink:#e8eef5;--mut:#8ea0b3;--acc:#f5a524;--ok:#3ddc97;--bad:#ff6b6b;--azl:#7cc4ff;--line:rgba(255,255,255,.14)}
+*{box-sizing:border-box}
+html{font-size:clamp(14px,1.12vw,30px);-webkit-text-size-adjust:100%}
+html,body{margin:0;height:100%}
+body{background:linear-gradient(160deg,#0d1520,#16202e 60%,#0b1119);color:var(--ink);font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:0 !important;overflow:hidden;cursor:default}
+body.parado{cursor:none}
+h1,h2,h3,p{margin:0}
+.m{color:var(--mut)}
+#tv{height:100dvh;display:grid;gap:1.1rem;padding:1.4rem 1.6rem;grid-template-columns:repeat(12,minmax(0,1fr));grid-template-rows:auto auto minmax(0,1fr) minmax(0,1.3fr)}
+.g{padding:.9rem 1.2rem;border-radius:1.6rem;min-width:0;min-height:0;overflow:hidden;display:flex;flex-direction:column}
+.g h2{font-size:1rem;font-weight:600;color:var(--mut);letter-spacing:.04em;text-transform:uppercase;margin-bottom:.7rem;display:flex;justify-content:space-between;align-items:baseline;gap:.6rem}
+.g h2 small{font-size:.8rem;text-transform:none;letter-spacing:0;font-weight:500}
+/* cabeçalho */
+#topo{grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;gap:1.2rem;padding:.2rem .4rem}
+#topo h1{font-size:1.7rem;font-weight:700;letter-spacing:-.01em}
+#topo .sub{display:flex;gap:.7rem;align-items:center;flex-wrap:wrap;margin-top:.35rem}
+.chip{display:inline-flex;align-items:center;gap:.5rem;padding:.3rem .9rem;border-radius:999px;border:1px solid rgba(255,255,255,.22);background:linear-gradient(180deg,rgba(255,255,255,.12),rgba(255,255,255,.04));font-size:.95rem;font-weight:600;white-space:nowrap}
+.chip i{width:.7rem;height:.7rem;border-radius:50%;background:var(--ok);box-shadow:0 0 .8rem var(--ok)}
+.chip.erro i{background:var(--bad);box-shadow:0 0 .8rem var(--bad)}.chip.erro{border-color:rgba(255,107,107,.6);color:#ffb3b3}
+#relogio{text-align:right;line-height:1}
+#hora{font-size:3.1rem;font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+#data{font-size:1rem;color:var(--mut);margin-top:.35rem}#data::first-letter{text-transform:uppercase}
+#prog{height:.22rem;border-radius:9px;background:rgba(255,255,255,.1);margin-top:.5rem;overflow:hidden}#prog b{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--acc),#ffc95f);transition:width 1s linear}
+/* indicadores */
+.kpi{grid-column:span 3;justify-content:center}
+.kpi .v{font-size:2.7rem;font-weight:700;line-height:1.05;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.kpi .v small{font-size:1.3rem;font-weight:600;color:var(--mut);margin-left:.25rem}
+.kpi .s{font-size:1.15rem;color:var(--acc);font-weight:600;margin-top:.25rem}
+.kpi.dest .v{color:var(--acc)}
+.kpi .u{font-size:1.6rem;font-weight:700;line-height:1.2}
+/* gráfico */
+#cDia{grid-column:span 8}
+#cMaq{grid-column:span 4}
+#cUlt{grid-column:span 8}
+#cAlt{grid-column:span 4}
+.bars{flex:1;min-height:0;display:flex;align-items:flex-end;gap:.28rem;padding-top:1.4rem;border-bottom:1px solid var(--line);position:relative}
+.bars .b{flex:1;min-width:0;border-radius:.45rem .45rem 0 0;background:linear-gradient(180deg,rgba(124,196,255,.85),rgba(43,128,255,.45));position:relative;min-height:2px}
+.bars .b.z{background:rgba(255,255,255,.12)}
+.bars .b.hoje{background:linear-gradient(180deg,#ffc95f,#f5a524 60%,#c97f08);box-shadow:0 0 1.3rem rgba(245,165,36,.45)}
+.bars .b em{position:absolute;left:50%;top:-1.35rem;transform:translateX(-50%);font-style:normal;font-size:.85rem;font-weight:700;color:var(--ink);white-space:nowrap}
+.eixo{display:flex;justify-content:space-between;font-size:.9rem;color:var(--mut);margin-top:.45rem}
+/* ranking */
+.rk{display:grid;gap:.65rem;overflow:hidden}
+.rk .l{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:.15rem .6rem;align-items:baseline}
+.rk .n{font-size:1.1rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rk .q{font-size:1.1rem;font-weight:700;font-variant-numeric:tabular-nums}
+.rk .t{grid-column:1/-1;height:.7rem;border-radius:9px;background:rgba(255,255,255,.08);overflow:hidden}
+.rk .t b{display:block;height:100%;border-radius:9px;background:linear-gradient(90deg,#2b80ff,#7cc4ff)}
+.rk .t b.alerta{background:linear-gradient(90deg,#e0900f,#ffc95f)}.rk .t b.crit{background:linear-gradient(90deg,#e04e4e,#ff8c8c)}
+.tag{font-size:.8rem;font-weight:700;padding:.05rem .5rem;border-radius:999px;white-space:nowrap;background:rgba(245,165,36,.22);color:#ffc95f}.tag.crit{background:rgba(255,107,107,.24);color:#ffb3b3}
+/* últimos abastecimentos */
+.tab{display:grid;gap:.15rem;overflow:hidden;align-content:start}
+.tab .lin{display:grid;grid-template-columns:9.5rem minmax(0,1.3fr) minmax(0,1.3fr) 6.5rem 9.5rem;gap:.8rem;align-items:center;padding:.38rem .8rem;border-radius:1rem;font-size:1.12rem;border:1px solid transparent}
+.tab .lin:nth-child(odd){background:rgba(255,255,255,.04)}
+.tab .cab{font-size:.85rem;color:var(--mut);text-transform:uppercase;letter-spacing:.05em;background:none !important}
+.tab .lin span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tab .num{text-align:right;font-weight:700;font-variant-numeric:tabular-nums;overflow:visible !important;text-overflow:clip !important}
+.tab .hr{font-variant-numeric:tabular-nums;font-weight:700;color:var(--acc)}.tab .hr small{display:inline;margin-left:.5rem;font-weight:500;color:var(--mut);font-size:.8rem}
+.tab .lin.novo{border-color:rgba(245,165,36,.8);background:rgba(245,165,36,.18) !important;animation:pisca 1.2s ease-in-out 6}
+@keyframes pisca{50%{box-shadow:0 0 1.4rem rgba(245,165,36,.55)}}
+/* alertas */
+.al{display:grid;gap:.6rem;align-content:start;overflow:hidden}
+.al .a{padding:.7rem .9rem;border-radius:1.1rem;font-size:1.05rem;line-height:1.3;border:1px solid rgba(245,165,36,.6);background:rgba(245,165,36,.12)}
+.al .a.crit{border-color:rgba(255,107,107,.7);background:rgba(255,107,107,.14)}
+.al .a b{display:block;font-size:1.15rem}
+.al .ok{padding:.9rem 1rem;border-radius:1.1rem;border:1px solid rgba(61,220,151,.5);background:rgba(61,220,151,.1);color:var(--ok);font-weight:600;font-size:1.1rem}
+.vazio{color:var(--mut);font-size:1.1rem;padding:1rem .4rem}
+/* controles e configuração */
+#ctl{position:fixed;right:1rem;bottom:1rem;display:flex;gap:.5rem;z-index:20;transition:opacity .4s}
+body.parado #ctl{opacity:0;pointer-events:none}
+#ctl button,#cfg button,#cfg input,#cfg select{font:inherit}
+#ctl button{width:2.8rem;height:2.8rem;border-radius:50%;border:1px solid rgba(255,255,255,.25);background:rgba(255,255,255,.1);color:var(--ink);cursor:pointer;font-size:1.2rem;-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px)}
+#cfg{position:fixed;inset:0;z-index:50;display:none;place-items:center;background:rgba(5,8,14,.7);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);padding:1rem}
+#cfg.on{display:grid}
+#cfg .g{width:min(34rem,100%);max-height:94dvh;overflow:auto;display:block}
+#cfg h1{font-size:1.5rem;margin-bottom:.5rem}
+#cfg label{display:block;margin-top:.8rem;color:var(--mut);font-size:.95rem}
+#cfg input,#cfg select{display:block;width:100%;margin-top:.3rem;padding:.75rem .9rem;color:var(--ink);font-size:1rem}
+#cfg .ck{display:flex;gap:.6rem;align-items:center;color:var(--ink)}#cfg .ck input{width:1.3rem;height:1.3rem;margin:0}
+#cfg .bt{display:flex;gap:.6rem;margin-top:1.1rem}
+#cfg button{flex:1;min-height:3rem;border-radius:1.2rem;border:1px solid rgba(255,255,255,.25);background:rgba(255,255,255,.1);color:var(--ink);font-weight:600;cursor:pointer}
+#cfg button.p{background:linear-gradient(180deg,#ffc95f,#f5a524 60%,#e5940f);color:#1b1200;border-color:rgba(255,235,190,.7)}
+#cfg .dica{font-size:.85rem;color:var(--mut);margin-top:.5rem;line-height:1.4}
+/* telas pequenas ou em pé: empilha e permite rolar */
+@media (max-width:900px),(max-aspect-ratio:1/1){
+  html{font-size:clamp(14px,2.2vw,22px)}body{overflow:auto}
+  #tv{height:auto;min-height:100dvh;grid-template-rows:none;grid-template-columns:repeat(2,minmax(0,1fr))}
+  .kpi{grid-column:span 1}#cDia,#cMaq,#cUlt,#cAlt{grid-column:1/-1}
+  #cDia{min-height:16rem}.tab .lin{grid-template-columns:5.2rem minmax(0,1fr) 5rem 5.6rem}.tab .lin .col{display:none}
+  #hora{font-size:2.2rem}#topo h1{font-size:1.3rem}#topo{flex-wrap:wrap}#relogio{text-align:left}.tab .lin{grid-template-columns:5.2rem minmax(0,1fr) 5rem 7.2rem !important}.kpi .v{font-size:2.3rem}
+}
+@media (prefers-reduced-motion:reduce){.tab .lin.novo{animation:none}#prog b{transition:none}}
+</style>
+<link rel="stylesheet" href="glass.css">
+<style>body{padding:0 !important}#tv .g{display:flex}#cfg .g{display:block}</style>
+</head>
+<body>
+<main id="tv">
+  <header id="topo">
+    <div>
+      <h1>Lubrificação · abastecimento de óleo</h1>
+      <div class="sub"><span class="chip" id="oleo">Óleo: —</span><span class="chip" id="estado"><i></i><span>Carregando...</span></span></div>
+    </div>
+    <div id="relogio"><div id="hora">--:--:--</div><div id="data">&nbsp;</div><div id="prog"><b></b></div></div>
+  </header>
+  <section class="g kpi" id="k1"></section><section class="g kpi" id="k2"></section><section class="g kpi" id="k3"></section><section class="g kpi dest" id="k4"></section>
+  <section class="g" id="cDia"></section>
+  <section class="g" id="cMaq"></section>
+  <section class="g" id="cUlt"></section>
+  <section class="g" id="cAlt"></section>
+</main>
+<div id="ctl"><button id="bFull" title="Tela cheia (F)" aria-label="Tela cheia">⛶</button><button id="bCfg" title="Configurar (S)" aria-label="Configurar">⚙</button></div>
+<div id="cfg" role="dialog" aria-modal="true"><section class="g">
+  <h1>Configurar o painel</h1>
+  <p class="m" style="line-height:1.4">Este aparelho só precisa ler o banco. Para a TV, use um token do GitHub <b>somente leitura</b> (permissão "Contents: Read-only", só neste repositório).</p>
+  <label>Repositório dos dados (usuário/nome)<input id="cr" autocomplete="off" autocapitalize="off" placeholder="usuario/repositorio"></label>
+  <label>Branch<input id="cb" autocomplete="off" autocapitalize="off" placeholder="main"></label>
+  <label>Token de leitura (deixe vazio se o repositório for público)<input id="ct" type="password" autocomplete="off"></label>
+  <label>Atualizar a cada<select id="ci"><option value="0">Automático (60 s com token, 2 min sem)</option><option value="30">30 segundos</option><option value="60">1 minuto</option><option value="120">2 minutos</option><option value="300">5 minutos</option></select></label>
+  <label class="ck"><input id="cn" type="checkbox"> Mostrar o nome dos colaboradores</label>
+  <p class="dica" id="cerro"></p>
+  <div class="bt"><button id="cFechar">Fechar</button><button class="p" id="cSalvar">Salvar e atualizar</button></div>
+</section></div>
+<script src="gh.js"></script>
+<script>
+const $=s=>document.querySelector(s),esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmt=n=>Number(n||0).toLocaleString('pt-BR',{maximumFractionDigits:1}),brl=n=>Number(n||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
+const DIA=864e5,p2=n=>String(n).padStart(2,'0'),hhmm=d=>p2(d.getHours())+':'+p2(d.getMinutes());
+const dk=d=>d.getFullYear()+'-'+p2(d.getMonth()+1)+'-'+p2(d.getDate());
+const TV=()=>{try{return Object.assign({int:0,nomes:1},JSON.parse(localStorage.getItem('tv')||'{}'))}catch(e){return{int:0,nomes:1}}};
+const intervalo=()=>(TV().int||(GH.cfg().token?60:120))*1000;
+let ROWS=[],OLEO=null,TODOS=0,ultimaOk=null,proxima=0,erro=null,vistos=null,novoAte={},timer=0,carregando=false;
+
+/* ---------- leitura do banco ---------- */
+async function lerSemToken(){
+  const c=GH.cfg(),r=await fetch('https://api.github.com/repos/'+c.repo+'/contents/'+GH.DB+(c.branch?'?ref='+encodeURIComponent(c.branch):''),{headers:{Accept:'application/vnd.github.raw+json'},cache:'no-store'});
+  if(r.status===404)return null;
+  if(!r.ok)throw new Error('GitHub '+r.status+(r.status===403?' (limite de consultas sem token: use um token de leitura)':''));
+  return{bytes:new Uint8Array(await r.arrayBuffer())};
+}
+async function lerBanco(){
+  const c=GH.cfg();if(!c.repo)throw new Error('Configure o repositório (botão ⚙ ou tecla S).');
+  const cur=c.token?await GH.read():await lerSemToken();if(!cur)return{rows:[],oleos:[]};
+  const S=await GH.sql(),d=new S.Database(cur.bytes);GH.prep(d);
+  const q=s=>{const st=d.prepare(s),o=[];while(st.step())o.push(st.getAsObject());st.free();return o};
+  const out={rows:q('SELECT * FROM abastecimentos ORDER BY fim DESC'),oleos:q('SELECT * FROM oleos')};d.close();return out;
+}
+async function carregar(){
+  if(carregando)return;carregando=true;clearTimeout(timer);
+  try{
+    const {rows,oleos}=await lerBanco();
+    OLEO=oleos.find(o=>o.ativo)||oleos[0]||null;TODOS=rows.length;
+    const nome=OLEO?String(OLEO.nome).trim().toLowerCase():null;
+    ROWS=rows.filter(r=>!nome||(r.oleo&&String(r.oleo).trim().toLowerCase()===nome));
+    const agora=Date.now();
+    if(vistos){for(const r of ROWS.slice(0,30))if(!vistos.has(r.uid)){novoAte[r.uid]=agora+12000}}
+    vistos=new Set(ROWS.map(r=>r.uid));
+    ultimaOk=new Date();erro=null;
+  }catch(e){erro=(e&&e.message)||String(e)}
+  carregando=false;desenhar();
+  timer=setTimeout(carregar,intervalo());proxima=Date.now()+intervalo();
+}
+
+/* ---------- cálculos ---------- */
+const preco=()=>OLEO&&OLEO.preco!=null?+OLEO.preco:0;
+const custo=r=>r.litros*(r.preco!=null?r.preco:preco());
+const soma=(rs,f)=>rs.reduce((s,r)=>s+f(r),0);
+function ago(d){
+  const m=Math.round((Date.now()-d.getTime())/6e4);
+  if(m<1)return'agora';if(m<60)return'há '+m+' min';
+  const h=Math.floor(m/60);if(h<24)return'há '+h+' h';
+  const ontem=new Date(Date.now()-DIA);return dk(d)===dk(ontem)?'ontem':p2(d.getDate())+'/'+p2(d.getMonth()+1);
+}
+function analise(){
+  const now=Date.now(),by={},lim=+localStorage.getItem('lim')||30,out=[];
+  ROWS.forEach(r=>(by[r.maquina]=by[r.maquina]||[]).push(r));
+  for(const m in by){
+    const t=r=>now-new Date(r.fim).getTime(),w=by[m].filter(r=>t(r)<7*DIA),b=by[m].filter(r=>t(r)>=7*DIA&&t(r)<35*DIA);
+    const sw=soma(w,r=>r.litros),sb=soma(b,r=>r.litros)/4,ex=sb>0?(sw/sb-1)*100:null;
+    out.push({m,sw,sb,ex,nivel:ex!=null&&sw>0?(ex>=2*lim?2:ex>=lim?1:0):0});
+  }
+  return out.sort((a,b)=>b.sw-a.sw);
+}
+
+/* ---------- desenho ---------- */
+function desenhar(){
+  const agora=new Date(),hoje=dk(agora),mes=agora.getFullYear()*100+agora.getMonth();
+  const dH=ROWS.filter(r=>dk(new Date(r.fim))===hoje),dS=ROWS.filter(r=>agora-new Date(r.fim)<7*DIA&&new Date(r.fim)<=agora),dM=ROWS.filter(r=>{const d=new Date(r.fim);return d.getFullYear()*100+d.getMonth()===mes});
+  const kp=(id,t,rs,extra)=>{$(id).innerHTML='<h2>'+t+'</h2><div class="v">'+fmt(soma(rs,r=>r.litros))+'<small>L</small></div><div class="s">'+brl(soma(rs,custo))+(extra||'')+'</div>'};
+  kp('#k1','Hoje',dH,' · '+dH.length+(dH.length===1?' abastecimento':' abastecimentos'));kp('#k2','Últimos 7 dias',dS,' · '+dS.length);kp('#k3','Este mês',dM,' · '+dM.length);
+  const u=ROWS[0],ud=u&&new Date(u.fim);
+  $('#k4').innerHTML='<h2>Último abastecimento</h2>'+(u?'<div class="v">'+hhmm(ud)+'<small>'+ago(ud)+'</small></div><div class="u">'+esc(u.maquina)+'</div><div class="s">'+fmt(u.litros)+' L'+(TV().nomes?' · '+esc(u.colaborador):'')+'</div>':'<div class="vazio">Nenhum abastecimento ainda.</div>');
+  // gráfico diário (30 dias)
+  const dias=[];for(let i=29;i>=0;i--){const d=new Date(agora.getFullYear(),agora.getMonth(),agora.getDate()-i);dias.push({d,k:dk(d),v:0})}
+  const ix={};dias.forEach(x=>ix[x.k]=x);ROWS.forEach(r=>{const x=ix[dk(new Date(r.fim))];if(x)x.v+=r.litros});
+  const mx=Math.max(...dias.map(x=>x.v),1),pk=dias.reduce((a,b)=>b.v>a.v?b:a),total=soma(dias,x=>x.v);
+  const sd=d=>p2(d.getDate())+'/'+p2(d.getMonth()+1);
+  $('#cDia').innerHTML='<h2>Consumo diário · 30 dias<small>'+fmt(total)+' L no período · pico '+fmt(pk.v)+' L em '+sd(pk.d)+'</small></h2><div class="bars" role="img" aria-label="Litros por dia nos últimos 30 dias">'+dias.map(x=>'<div class="b'+(x.v?'':' z')+(x.k===hoje?' hoje':'')+'" style="height:'+Math.max(x.v/mx*100,1.5)+'%">'+(x===pk&&pk.v>0?'<em>'+fmt(pk.v)+'</em>':'')+'</div>').join('')+'</div><div class="eixo"><span>'+sd(dias[0].d)+'</span><span>'+sd(dias[14].d)+'</span><span>hoje</span></div>';
+  // ranking por máquina
+  const an=analise().filter(a=>a.sw>0).slice(0,6),mxm=Math.max(...an.map(a=>a.sw),1);
+  $('#cMaq').innerHTML='<h2>Por máquina · 7 dias</h2>'+(an.length?'<div class="rk">'+an.map(a=>'<div class="l"><span class="n">'+esc(a.m)+'</span>'+(a.nivel?'<span class="tag'+(a.nivel===2?' crit':'')+'">+'+Math.round(a.ex)+'%</span>':'<span></span>')+'<span class="q">'+fmt(a.sw)+' L</span><div class="t"><b class="'+(a.nivel===2?'crit':a.nivel?'alerta':'')+'" style="width:'+Math.max(a.sw/mxm*100,3)+'%"></b></div></div>').join('')+'</div>':'<div class="vazio">Sem abastecimentos nos últimos 7 dias.</div>');
+  // últimos abastecimentos
+  const nomes=TV().nomes,ult=ROWS.slice(0,8);
+  $('#cUlt').innerHTML='<h2>Últimos abastecimentos</h2><div class="tab"><div class="lin cab"><span>Hora</span><span>Máquina</span><span class="col">'+(nomes?'Colaborador':'Óleo')+'</span><span class="num">Litros</span><span class="num">Valor</span></div>'+(ult.length?ult.map(r=>{const d=new Date(r.fim);return'<div class="lin'+(novoAte[r.uid]>Date.now()?' novo':'')+'"><span class="hr">'+hhmm(d)+'<small>'+(dk(d)===hoje?ago(d):p2(d.getDate())+'/'+p2(d.getMonth()+1))+'</small></span><span>'+esc(r.maquina)+'</span><span class="col">'+esc(nomes?r.colaborador:(r.oleo||''))+'</span><span class="num">'+fmt(r.litros)+' L</span><span class="num">'+brl(custo(r))+'</span></div>'}).join(''):'<div class="vazio">Nenhum abastecimento com este óleo.</div>')+'</div>';
+  // alertas
+  const al=analise().filter(a=>a.nivel);
+  $('#cAlt').innerHTML='<h2>Alertas de consumo</h2><div class="al">'+(al.length?al.map(a=>'<div class="a'+(a.nivel===2?' crit':'')+'"><b>'+esc(a.m)+' · '+(a.nivel===2?'crítico':'atenção')+'</b>'+fmt(a.sw)+' L nos últimos 7 dias, '+Math.round(a.ex)+'% acima da média das 4 semanas anteriores ('+fmt(a.sb)+' L por semana).</div>').join(''):'<div class="ok">Nenhuma máquina com consumo fora do normal.</div>')+'</div>';
+  if(!matchMedia('(max-width:900px),(max-aspect-ratio:1/1)').matches){ajusta('#cUlt','.lin:not(.cab)');ajusta('#cMaq','.rk .l');ajusta('#cAlt','.al .a,.al .ok')}
+  // cabeçalho
+  $('#oleo').textContent=OLEO?'Óleo: '+OLEO.nome+(OLEO.viscosidade?' '+OLEO.viscosidade:'')+' · '+ROWS.length+' de '+TODOS+' registros':'Óleo: todos';
+  const est=$('#estado');est.className='chip'+(erro?' erro':'');
+  est.lastChild.textContent=erro?'Sem atualizar'+(ultimaOk?' desde '+hhmm(ultimaOk):'')+': '+erro:'Atualizado às '+hhmm(ultimaOk||agora);
+  if(Object.keys(novoAte).length){const f=Math.min(...Object.values(novoAte).filter(t=>t>Date.now()));if(isFinite(f))setTimeout(desenhar,f-Date.now()+200)}
+}
+function ajusta(sel,item){   // esconde as linhas que não cabem inteiras no cartão
+  const g=$(sel),lim=g.getBoundingClientRect().bottom-parseFloat(getComputedStyle(g).paddingBottom);
+  const its=[...g.querySelectorAll(item)];its.forEach(e=>e.style.display='');
+  let cortou=false;its.forEach(e=>{if(cortou||e.getBoundingClientRect().bottom>lim+1){cortou=true;e.style.display='none'}});
+}
+addEventListener('resize',()=>{try{desenhar()}catch(e){}});
+function relogio(){
+  const d=new Date();$('#hora').textContent=hhmm(d)+':'+p2(d.getSeconds());
+  $('#data').textContent=d.toLocaleDateString('pt-BR',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
+  const tot=intervalo(),rest=Math.max(0,proxima-Date.now());$('#prog b').style.width=(proxima?(100-rest/tot*100):0)+'%';
+}
+setInterval(relogio,1000);relogio();
+setInterval(desenhar,30000);   // "há 5 min" e destaques se mantêm em dia mesmo entre as leituras
+
+/* ---------- tela cheia, tela ligada, cursor, configuração ---------- */
+let wl=null;async function manterLigada(){try{if(navigator.wakeLock&&!wl){wl=await navigator.wakeLock.request('screen');wl.addEventListener('release',()=>wl=null)}}catch(e){}}
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)manterLigada()});manterLigada();
+function tela(){if(document.fullscreenElement)document.exitFullscreen();else document.documentElement.requestFullscreen&&document.documentElement.requestFullscreen().catch(()=>{})}
+let ocioT=0;function acorda(){document.body.classList.remove('parado');clearTimeout(ocioT);ocioT=setTimeout(()=>{if(!$('#cfg').classList.contains('on'))document.body.classList.add('parado')},4000)}
+['mousemove','touchstart','keydown','click'].forEach(e=>addEventListener(e,acorda,{passive:true}));acorda();
+function abreCfg(){const c=GH.cfg(),t=TV();$('#cr').value=c.repo||'';$('#cb').value=c.branch||'main';$('#ct').value=c.token||'';$('#ci').value=String(t.int||0);$('#cn').checked=!!t.nomes;$('#cerro').textContent='';$('#cfg').classList.add('on')}
+function fechaCfg(){$('#cfg').classList.remove('on');acorda()}
+$('#bCfg').onclick=abreCfg;$('#bFull').onclick=tela;$('#cFechar').onclick=fechaCfg;
+addEventListener('keydown',e=>{if($('#cfg').classList.contains('on')){if(e.key==='Escape')fechaCfg();return}if(e.key==='f'||e.key==='F')tela();if(e.key==='s'||e.key==='S')abreCfg()});
+$('#cSalvar').onclick=()=>{
+  const repo=$('#cr').value.trim();if(!/^[\w.-]+\/[\w.-]+$/.test(repo)){$('#cerro').textContent='Use o formato usuario/repositorio.';return}
+  GH.set({repo,branch:$('#cb').value.trim()||'main',token:$('#ct').value.trim()});
+  localStorage.setItem('tv',JSON.stringify({int:+$('#ci').value||0,nomes:$('#cn').checked?1:0}));
+  vistos=null;novoAte={};fechaCfg();carregar();
+};
+/* inicia; recarrega a página a cada 6 h para a TV nunca acumular memória */
+setTimeout(()=>location.reload(),6*3600e3);
+if(!GH.cfg().repo){abreCfg();desenhar()}else{desenhar();carregar()}
+</script>
+</body>
+</html>
