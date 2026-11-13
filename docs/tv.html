@@ -160,7 +160,7 @@ async function carregar(){
     const {rows,oleos}=await lerBanco();
     OLEO=oleos.find(o=>o.ativo)||oleos[0]||null;TODOS=rows.length;
     const nome=OLEO?String(OLEO.nome).trim().toLowerCase():null;
-    ROWS=rows.filter(r=>!nome||(r.oleo&&String(r.oleo).trim().toLowerCase()===nome));
+    ROWS=rows.filter(r=>r.litros>0&&(!nome||(r.oleo&&String(r.oleo).trim().toLowerCase()===nome)));   // descartes (0 L) ficam só no histórico/administração
     const agora=Date.now();
     if(vistos){for(const r of ROWS.slice(0,30))if(!vistos.has(r.uid)){novoAte[r.uid]=agora+12000}}
     vistos=new Set(ROWS.map(r=>r.uid));
